@@ -1,2 +1,7 @@
+# 제외 폴더
 processed_data/*
 experiments/*
+Mat/*
+
+# 제외 확장자
+*.mat

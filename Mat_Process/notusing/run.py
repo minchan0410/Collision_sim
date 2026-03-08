@@ -11,7 +11,7 @@ import argparse
 from pathlib import Path
 import traceback
 
-import maker  # maker.py must be in the same folder (or in PYTHONPATH)
+import Mat_Process.notusing.maker as maker  # maker.py must be in the same folder (or in PYTHONPATH)
 
 
 def build_tree(paths: list[Path]) -> str:

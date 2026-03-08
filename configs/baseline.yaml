@@ -8,17 +8,17 @@ data_dir: processed_data
 diffnet: TransformerConcatLinear #TransformerConcatLinear
 encoder_dim: 256
 tf_layer: 3
-epochs: 90
+epochs: 100
 batch_size: 256
 eval_batch_size: 256
 k_eval: 25
 seed: 123
-eval_every: 10
+eval_every: 100
 # Testing
-eval_at: 60
+eval_at: 100
 eval_mode: True
 # set to "ddim" to enable fast sampling
-sampling: ddpm
+sampling: ddim
 ############### Trajectron++ Config #################
 # misc
 conf: None
