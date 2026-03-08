@@ -1,0 +1,17 @@
+1. 전처리
+
+python process_data.py
+main.py랑 baseline.yaml을 통해 train, test 생성을 둘 다 함.
+
+2. 훈련 및 검증
+[Train]
+
+baseline.yaml에서 "eval_mode: False"로 두기.
+python main.py --config configs/baseline.yaml --dataset univ
+- univ 말고 eth, hotel, zara1, zara2로 해도 됨. 장소에 따라 다르게 학습을 하는거임.
+
+[Test]
+
+baseline.yaml에서 "eval_mode: True"로 두기, eval_at으로 몇 epoch짜리 모델을 돌릴지 결정.
+python main.py --config configs/baseline.yaml --dataset univ 
+훈련이랑 똑같이. 

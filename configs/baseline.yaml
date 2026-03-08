@@ -15,8 +15,8 @@ k_eval: 25
 seed: 123
 eval_every: 10
 # Testing
-eval_at: 100
-eval_mode: False
+eval_at: 60
+eval_mode: True
 # set to "ddim" to enable fast sampling
 sampling: ddpm
 ############### Trajectron++ Config #################
