@@ -1,0 +1,8 @@
+.vscode
+.pt
+.mat
+.mp4
+.csv
+mnist_data/
+results/
+dataset/

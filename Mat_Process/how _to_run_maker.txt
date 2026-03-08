@@ -1,0 +1,4 @@
+maker.py의 실행 방법.
+
+python maker.py --mat .\LCR_LF_CU_data_9.mat --out .\out_lane_frame --lane_mode frame --lane_window 30 --stride 5
+python maker.py --mat .\LCR_LF_CU_data_9.mat --out .\out_lane_accum --lane_mode accum --stride 5
