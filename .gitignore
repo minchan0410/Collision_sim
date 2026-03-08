@@ -1,7 +1,11 @@
 # 제외 폴더
 processed_data/*
 experiments/*
-Mat/*
+
+mat_preprocess/mat/*
+mat_preprocess/mat_check/*
+mat_preprocess/mat_txt/*
+
 
 # 제외 확장자
 *.mat

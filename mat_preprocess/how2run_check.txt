@@ -1,4 +1,4 @@
-python Mat_Process/check.py --in_root "Mat_Process/Mat" --out_dir "Mat_Process/Mat_check" --workers 4 --progress_every 100
+python mat_preprocess/check.py --in_root "mat_preprocess/mat" --out_dir "mat_preprocess/mat_check" --workers 8 --progress_every 100
 
 --in_root : 검사할 폴더
 --out_dir : 결과 txt를 내보낼 폴더

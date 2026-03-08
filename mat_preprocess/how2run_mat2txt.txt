@@ -1,0 +1,1 @@
+python mat_preprocess/mat2txt.py --in-root mat_preprocess/mat --pass-list mat_preprocess/mat_check/pass_list.txt --out-dir mat_preprocess/mat_txt/all

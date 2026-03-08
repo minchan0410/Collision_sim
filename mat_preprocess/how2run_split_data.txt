@@ -1,0 +1,1 @@
+python mat_preprocess/split_data.py --train 8 --val 1 --test 1
