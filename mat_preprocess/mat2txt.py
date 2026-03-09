@@ -3,7 +3,7 @@
 Convert MAT driving scenarios into MID raw txt trajectories.
 
 Output format per line:
-    frame_id<TAB>track_id<TAB>pos_x<TAB>pos_y
+  frame_id<TAB>track_id<TAB>pos_x<TAB>pos_y
 
 Design choices for MID compatibility:
 - We downsample each MAT sequence to one point every 0.4 seconds.
@@ -30,6 +30,7 @@ import csv
 import gc
 import math
 import re
+import multiprocessing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -65,7 +66,6 @@ TRAFFIC_TX_RE = re.compile(r"^Traffic_T(\d+)_tx$")
 # ---------------------------------------------------------------------------
 # MAT access helpers
 # ---------------------------------------------------------------------------
-
 
 def is_hdf5(path: Path) -> bool:
     try:
@@ -129,11 +129,9 @@ class V73Accessor(MatAccessor):
         return self._keys
 
     def _read_h5_node(self, node) -> np.ndarray:
-        # MATLAB v7.3 often stores nested signal structs with a 'data' child.
         if isinstance(node, h5py.Group):
             if "data" in node:
                 return self._read_h5_node(node["data"])
-            # Best effort fallback for simple groups.
             if len(node.keys()) == 1:
                 only_key = next(iter(node.keys()))
                 return self._read_h5_node(node[only_key])
@@ -141,7 +139,6 @@ class V73Accessor(MatAccessor):
 
         if isinstance(node, h5py.Dataset):
             value = node[()]
-            # MATLAB object references.
             if getattr(value, "dtype", None) is not None and value.dtype.kind == "O":
                 refs = np.asarray(value).reshape(-1)
                 decoded: List[np.ndarray] = []
@@ -173,7 +170,6 @@ def load_mat_accessor(path: Path) -> MatAccessor:
 # ---------------------------------------------------------------------------
 # Conversion helpers
 # ---------------------------------------------------------------------------
-
 
 def as_numeric_1d(arr: np.ndarray, *, name: str) -> np.ndarray:
     out = np.asarray(arr).squeeze()
@@ -318,13 +314,8 @@ def convert_one_file(
             return ConversionResult(
                 source_rel=source_rel,
                 output_name=safe_output_name(source_rel),
-                num_rows=0,
-                num_tracks=0,
-                num_ego_tracks=0,
-                num_traffic_tracks=0,
-                sampled_steps=0,
-                original_steps=0,
-                original_dt=float("nan"),
+                num_rows=0, num_tracks=0, num_ego_tracks=0, num_traffic_tracks=0,
+                sampled_steps=0, original_steps=0, original_dt=float("nan"),
                 status="SKIP_MISSING_REQUIRED",
                 message="missing fields: " + ", ".join(missing),
             )
@@ -335,13 +326,8 @@ def convert_one_file(
             return ConversionResult(
                 source_rel=source_rel,
                 output_name=safe_output_name(source_rel),
-                num_rows=0,
-                num_tracks=0,
-                num_ego_tracks=0,
-                num_traffic_tracks=0,
-                sampled_steps=int(sample_idx.size),
-                original_steps=int(time.size),
-                original_dt=original_dt,
+                num_rows=0, num_tracks=0, num_ego_tracks=0, num_traffic_tracks=0,
+                sampled_steps=int(sample_idx.size), original_steps=int(time.size), original_dt=original_dt,
                 status="SKIP_TOO_SHORT",
                 message="sequence shorter than two sampled steps",
             )
@@ -353,31 +339,21 @@ def convert_one_file(
         num_ego_tracks = 0
         num_traffic_tracks = 0
 
-        # ------------------------------------------------------------------
         # Ego vehicle
-        # ------------------------------------------------------------------
         ego_x = as_numeric_1d(accessor.get("Car_Con_tx"), name="Car_Con_tx")[sample_idx]
         ego_y = as_numeric_1d(accessor.get("Car_Con_ty"), name="Car_Con_ty")[sample_idx]
         ego_valid = np.isfinite(ego_x) & np.isfinite(ego_y)
         ego_segments, next_track_id = split_contiguous_segments(
-            frames=raw_frames,
-            x=ego_x,
-            y=ego_y,
-            valid_mask=ego_valid,
-            raw_frame_step=raw_frame_step,
-            jump_threshold_m=jump_threshold_m,
-            min_points=min_points_per_track,
-            track_id_start=next_track_id,
-            source_label="ego",
+            frames=raw_frames, x=ego_x, y=ego_y, valid_mask=ego_valid,
+            raw_frame_step=raw_frame_step, jump_threshold_m=jump_threshold_m,
+            min_points=min_points_per_track, track_id_start=next_track_id, source_label="ego",
         )
         num_ego_tracks = len(ego_segments)
         for seg in ego_segments:
             for fr, x_val, y_val in zip(seg.frames, seg.x, seg.y):
                 rows.append((int(fr), int(seg.track_id), float(x_val), float(y_val)))
 
-        # ------------------------------------------------------------------
         # Traffic agents
-        # ------------------------------------------------------------------
         traffic_slots: List[Tuple[int, str, str]] = []
         for key in accessor.keys():
             match = TRAFFIC_TX_RE.match(key)
@@ -413,14 +389,9 @@ def convert_one_file(
                 valid &= n_objs > slot_idx
 
             segments, next_track_id = split_contiguous_segments(
-                frames=raw_frames,
-                x=tx,
-                y=ty,
-                valid_mask=valid,
-                raw_frame_step=raw_frame_step,
-                jump_threshold_m=jump_threshold_m,
-                min_points=min_points_per_track,
-                track_id_start=next_track_id,
+                frames=raw_frames, x=tx, y=ty, valid_mask=valid,
+                raw_frame_step=raw_frame_step, jump_threshold_m=jump_threshold_m,
+                min_points=min_points_per_track, track_id_start=next_track_id,
                 source_label=f"traffic_slot_{slot_idx:02d}",
             )
 
@@ -455,13 +426,8 @@ def convert_one_file(
         return ConversionResult(
             source_rel=source_rel,
             output_name=safe_output_name(source_rel),
-            num_rows=0,
-            num_tracks=0,
-            num_ego_tracks=0,
-            num_traffic_tracks=0,
-            sampled_steps=0,
-            original_steps=0,
-            original_dt=float("nan"),
+            num_rows=0, num_tracks=0, num_ego_tracks=0, num_traffic_tracks=0,
+            sampled_steps=0, original_steps=0, original_dt=float("nan"),
             status="ERROR",
             message=f"{type(exc).__name__}: {exc}",
         )
@@ -475,18 +441,15 @@ def convert_one_file(
 # Path / pass-list helpers
 # ---------------------------------------------------------------------------
 
-
 def read_pass_list(path: Path) -> List[str]:
     lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
     return [line for line in lines if line and not line.startswith("#")]
-
 
 def build_basename_index(root: Path) -> Dict[str, List[Path]]:
     index: Dict[str, List[Path]] = {}
     for mat_path in root.rglob("*.mat"):
         index.setdefault(mat_path.name, []).append(mat_path)
     return index
-
 
 def resolve_pass_entry(root: Path, entry: str, basename_index: Dict[str, List[Path]]) -> Tuple[Optional[Path], str]:
     direct = root / entry
@@ -505,9 +468,19 @@ def resolve_pass_entry(root: Path, entry: str, basename_index: Dict[str, List[Pa
 
 
 # ---------------------------------------------------------------------------
+# Multiprocessing Wrapper
+# ---------------------------------------------------------------------------
+def _worker_wrapper(kwargs: dict, q: multiprocessing.Queue) -> None:
+    try:
+        res = convert_one_file(**kwargs)
+        q.put(res)
+    except Exception as e:
+        q.put(e)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Convert pass_list MAT files into MID raw txt format.")
@@ -549,6 +522,9 @@ def main() -> None:
     total_rows_written = 0
     total_tracks_written = 0
 
+    # 프로세스 생성 방식을 'spawn'으로 강제하여 메모리 꼬임 및 C 모듈 충돌 방지
+    ctx = multiprocessing.get_context('spawn')
+
     with manifest_path.open("w", encoding="utf-8", newline="") as f_manifest:
         writer = csv.writer(f_manifest)
         writer.writerow([
@@ -558,15 +534,55 @@ def main() -> None:
         ])
 
         for idx, (mat_path, source_rel) in enumerate(resolved, start=1):
-            result = convert_one_file(
-                mat_path,
-                source_rel,
-                out_dir=out_dir,
-                target_dt=float(args.target_dt),
-                raw_frame_step=int(args.raw_frame_step),
-                jump_threshold_m=float(args.jump_threshold_m),
-                min_points_per_track=int(args.min_points_per_track),
-            )
+            kwargs = {
+                "path": mat_path,
+                "source_rel": source_rel,
+                "out_dir": out_dir,
+                "target_dt": float(args.target_dt),
+                "raw_frame_step": int(args.raw_frame_step),
+                "jump_threshold_m": float(args.jump_threshold_m),
+                "min_points_per_track": int(args.min_points_per_track),
+            }
+
+            q = ctx.Queue()
+            p = ctx.Process(target=_worker_wrapper, args=(kwargs, q))
+            p.start()
+            p.join()  # 자식 프로세스가 종료될 때까지 대기
+
+            if p.exitcode != 0:
+                # 자식 프로세스가 Segfault 등으로 비정상 종료된 경우
+                result = ConversionResult(
+                    source_rel=source_rel,
+                    output_name=safe_output_name(source_rel),
+                    num_rows=0, num_tracks=0, num_ego_tracks=0, num_traffic_tracks=0,
+                    sampled_steps=0, original_steps=0, original_dt=float("nan"),
+                    status="ERROR_CRASH",
+                    message=f"Process crashed with exit code {p.exitcode} (Corrupted file or C-level Segfault)"
+                )
+            else:
+                # 정상적으로 완료되었으나 파이썬 레벨의 Exception이 있을 수 있음
+                if not q.empty():
+                    out = q.get()
+                    if isinstance(out, Exception):
+                        result = ConversionResult(
+                            source_rel=source_rel,
+                            output_name=safe_output_name(source_rel),
+                            num_rows=0, num_tracks=0, num_ego_tracks=0, num_traffic_tracks=0,
+                            sampled_steps=0, original_steps=0, original_dt=float("nan"),
+                            status="ERROR",
+                            message=f"{type(out).__name__}: {out}",
+                        )
+                    else:
+                        result = out
+                else:
+                    result = ConversionResult(
+                        source_rel=source_rel,
+                        output_name=safe_output_name(source_rel),
+                        num_rows=0, num_tracks=0, num_ego_tracks=0, num_traffic_tracks=0,
+                        sampled_steps=0, original_steps=0, original_dt=float("nan"),
+                        status="ERROR_UNKNOWN",
+                        message="Process exited normally but returned no data.",
+                    )
 
             writer.writerow([
                 result.source_rel, result.output_name, result.status, result.message,
@@ -580,8 +596,11 @@ def main() -> None:
                 ok_count += 1
                 total_rows_written += result.num_rows
                 total_tracks_written += result.num_tracks
-            elif result.status == "ERROR":
+            elif result.status.startswith("ERROR"):
                 error_count += 1
+                # 손상된 파일이 감지되면 화면에 즉시 출력하여 범인을 색출
+                if "CRASH" in result.status:
+                    print(f"\n[WARNING] 심각하게 손상된 파일 감지 후 건너뜀 (Segfault 우회됨): {source_rel}")
             elif result.status.startswith("SKIP"):
                 skip_count += 1
 

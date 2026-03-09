@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
 # check_mp4_and_traffic_meta.py
 # Accurate + fast(ish) metadata scan for MAT v5 (incl. miCOMPRESSED) and v7.3(HDF5)
-# Checks:
-#   (1) maker.py required fields exist in data struct
-#   (2) traffic >= 1 (Traffic_Txx_tx & Traffic_Txx_ty pair)
-# Progress:
-#   overall % + folder(top-level) % + current PASS count
-#
-# Usage:
-#   python check_mp4_and_traffic_meta.py --in_root "C:\...\Mat" --out_dir "C:\...\logs" --workers 4 --progress_every 200
 
 from __future__ import annotations
 import argparse
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
-import os, re, mmap, zlib, struct
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import os, re, mmap, zlib, struct, sys
+from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 
 # v7.3(HDF5) support
 try:
@@ -365,13 +357,11 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     mats = sorted(in_root.rglob(args.glob))
-    rels = [p.relative_to(in_root).as_posix() for p in mats]
-    tasks = [(str(p), r) for p, r in zip(mats, rels)]
-    total = len(tasks)
+    total = len(mats)
 
-    # folder totals (top-level folder under in_root)
     folder_total: Dict[str, int] = {}
-    for r in rels:
+    for p in mats:
+        r = p.relative_to(in_root).as_posix()
         f = top_folder(r)
         folder_total[f] = folder_total.get(f, 0) + 1
     folder_done: Dict[str, int] = {k: 0 for k in folder_total.keys()}
@@ -385,33 +375,66 @@ def main():
     done = 0
     last_print = ""
 
+    active_tasks = {}
+    MAX_QUEUE = args.workers * 2
+    tasks_iter = iter(mats)
+
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
-        futs = [ex.submit(scan_one, a, r, args.target_var) for (a, r) in tasks]
-        for fut in as_completed(futs):
-            rel, verdict, reason = fut.result()
-            details.append((rel, verdict, reason))
+        while active_tasks or tasks_iter is not None:
+            # 1. 큐의 빈자리만큼만 새로운 작업을 제출 (tasks_iter가 None이 아닐 때만)
+            while tasks_iter is not None and len(active_tasks) < MAX_QUEUE:
+                try:
+                    p = next(tasks_iter)
+                    r = p.relative_to(in_root).as_posix()
+                    fut = ex.submit(scan_one, str(p), r, args.target_var)
+                    active_tasks[fut] = r
+                except StopIteration:
+                    tasks_iter = None
+                    break
+            
+            if not active_tasks:
+                break
 
-            done += 1
-            f = top_folder(rel)
-            folder_done[f] = folder_done.get(f, 0) + 1
+            # 2. 작업 완료 대기 (타임아웃 감시)
+            done_futs, _ = wait(active_tasks.keys(), timeout=30.0, return_when=FIRST_COMPLETED)
 
-            # classify
-            if verdict == "PASS":
-                passed.append(rel)
-            elif verdict == "SKIP_NO_TRAFFIC":
-                no_tr.append(Path(rel))
-            elif verdict == "SKIP_UNREADABLE":
-                unread.append(Path(rel))
-            else:
-                miss_req.append(Path(rel))
+            if not done_futs:
+                print("\n[CRITICAL WARNING] 파서가 무한 대기 상태에 빠졌습니다!")
+                print("현재 처리 중이던 의심 파일 목록:")
+                for f, rel_path in active_tasks.items():
+                    print(f" -> {rel_path}")
+                print("\n위 파일들 중 하나가 손상되었거나 구조적 오류를 일으켰습니다. 스크립트를 강제 종료합니다.")
+                ex.shutdown(wait=False, cancel_futures=True)
+                sys.exit(1)
 
-            # progress
-            if done % args.progress_every == 0 or done == total:
-                pass_cnt = len(passed)
-                line = progress_line(done, total, f, folder_done[f], folder_total[f], pass_cnt)
-                if line != last_print:
-                    print(line, flush=True)
-                    last_print = line
+            # 3. 완료된 작업 처리
+            for fut in done_futs:
+                rel = active_tasks.pop(fut)
+                try:
+                    rel_ret, verdict, reason = fut.result()
+                except Exception as e:
+                    rel_ret, verdict, reason = rel, "SKIP_UNREADABLE", f"worker_crash:{type(e).__name__}"
+                
+                details.append((rel_ret, verdict, reason))
+                done += 1
+                f = top_folder(rel_ret)
+                folder_done[f] = folder_done.get(f, 0) + 1
+
+                if verdict == "PASS":
+                    passed.append(rel_ret)
+                elif verdict == "SKIP_NO_TRAFFIC":
+                    no_tr.append(Path(rel_ret))
+                elif verdict == "SKIP_UNREADABLE":
+                    unread.append(Path(rel_ret))
+                else:
+                    miss_req.append(Path(rel_ret))
+
+                if done % args.progress_every == 0 or done == total:
+                    pass_cnt = len(passed)
+                    line = progress_line(done, total, f, folder_done[f], folder_total[f], pass_cnt)
+                    if line != last_print:
+                        print(line, flush=True)
+                        last_print = line
 
     # Write outputs
     (out_dir / "pass_list.txt").write_text("\n".join(sorted(passed)) + "\n", encoding="utf-8")
@@ -419,23 +442,23 @@ def main():
     (out_dir / "no_traffic_tree.txt").write_text(build_tree(sorted(no_tr)), encoding="utf-8")
     (out_dir / "unreadable_tree.txt").write_text(build_tree(sorted(unread)), encoding="utf-8")
 
-    with (out_dir / "skipped_details.tsv").open("w", encoding="utf-8") as f:
-        f.write("relative_path\tverdict\treason\n")
+    with (out_dir / "skipped_details.tsv").open("w", encoding="utf-8") as file:
+        file.write("relative_path\tverdict\treason\n")
         for rel, verdict, reason in sorted(details):
             if verdict != "PASS":
-                f.write(f"{rel}\t{verdict}\t{reason}\n")
+                file.write(f"{rel}\t{verdict}\t{reason}\n")
 
-    with (out_dir / "summary.txt").open("w", encoding="utf-8") as f:
-        f.write(f"in_root: {in_root}\n")
-        f.write(f"glob: {args.glob}\n")
-        f.write(f"target_var: {args.target_var}\n")
-        f.write(f"total_mat_files: {len(mats)}\n")
-        f.write(f"PASS (required + traffic>=1): {len(passed)}\n")
-        f.write(f"SKIP_MISSING_REQUIRED: {len(miss_req)}\n")
-        f.write(f"SKIP_NO_TRAFFIC: {len(no_tr)}\n")
-        f.write(f"SKIP_UNREADABLE: {len(unread)}\n")
-        f.write(f"workers: {args.workers}\n")
-        f.write(f"progress_every: {args.progress_every}\n")
+    with (out_dir / "summary.txt").open("w", encoding="utf-8") as file:
+        file.write(f"in_root: {in_root}\n")
+        file.write(f"glob: {args.glob}\n")
+        file.write(f"target_var: {args.target_var}\n")
+        file.write(f"total_mat_files: {len(mats)}\n")
+        file.write(f"PASS (required + traffic>=1): {len(passed)}\n")
+        file.write(f"SKIP_MISSING_REQUIRED: {len(miss_req)}\n")
+        file.write(f"SKIP_NO_TRAFFIC: {len(no_tr)}\n")
+        file.write(f"SKIP_UNREADABLE: {len(unread)}\n")
+        file.write(f"workers: {args.workers}\n")
+        file.write(f"progress_every: {args.progress_every}\n")
 
     print("[DONE]")
     print(f"  total: {len(mats)}")
