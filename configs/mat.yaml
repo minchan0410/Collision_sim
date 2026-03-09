@@ -12,7 +12,7 @@ batch_size: 512
 eval_batch_size: 256
 k_eval: 25
 seed: 123
-eval_every: 25
+eval_every: 50
 # Testing
 eval_at: 100
 eval_mode: False

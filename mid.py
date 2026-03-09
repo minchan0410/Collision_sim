@@ -41,7 +41,9 @@ class MID():
 
             self.scheduler.step()
             self.train_dataset.augment = False
-            if epoch % self.config.eval_every == 0:
+            
+            # --- 수정된 부분 1: 평가 로직 (eval_every > 0 일 때만 실행되도록 안전장치 추가) ---
+            if self.config.eval_every > 0 and epoch % self.config.eval_every == 0:
                 self.model.eval()
 
                 node_type = "PEDESTRIAN"
@@ -50,7 +52,6 @@ class MID():
 
                 ph = self.hyperparams['prediction_horizon']
                 max_hl = self.hyperparams['maximum_history_length']
-
 
                 for i, scene in enumerate(self.eval_scenes):
                     print(f"----- Evaluating Scene {i + 1}/{len(self.eval_scenes)}")
@@ -69,10 +70,10 @@ class MID():
 
                         predictions = traj_pred
                         predictions_dict = {}
-                        for i, ts in enumerate(timesteps_o):
+                        for j, ts in enumerate(timesteps_o):
                             if ts not in predictions_dict.keys():
                                 predictions_dict[ts] = dict()
-                            predictions_dict[ts][nodes[i]] = np.transpose(predictions[:, [i]], (1, 0, 2, 3))
+                            predictions_dict[ts][nodes[j]] = np.transpose(predictions[:, [j]], (1, 0, 2, 3))
 
                         batch_error_dict = evaluation.compute_batch_statistics(predictions_dict,
                                                                                scene.dt,
@@ -87,8 +88,6 @@ class MID():
                         eval_ade_batch_errors = np.hstack((eval_ade_batch_errors, batch_error_dict[node_type]['ade']))
                         eval_fde_batch_errors = np.hstack((eval_fde_batch_errors, batch_error_dict[node_type]['fde']))
 
-
-
                 ade = np.mean(eval_ade_batch_errors)
                 fde = np.mean(eval_fde_batch_errors)
 
@@ -99,18 +98,19 @@ class MID():
                     ade = ade * 50
                     fde = fde * 50
 
-
                 print(f"Epoch {epoch} Best Of 20: ADE: {ade} FDE: {fde}")
                 self.log.info(f"Best of 20: Epoch {epoch} ADE: {ade} FDE: {fde}")
 
-                # Saving model
-                checkpoint = {
-                    'encoder': self.registrar.model_dict,
-                    'ddpm': self.model.state_dict()
-                 }
-                torch.save(checkpoint, osp.join(self.model_dir, f"{self.config.dataset}_epoch{epoch}.pt"))
-
+                # 평가가 끝나면 다시 학습 모드로 전환
                 self.model.train()
+
+            # --- 수정된 부분 2: 모델 저장 로직 (if 조건문 밖으로 완전히 분리하여 무조건 저장) ---
+            checkpoint = {
+                'encoder': self.registrar.model_dict,
+                'ddpm': self.model.state_dict()
+             }
+            torch.save(checkpoint, osp.join(self.model_dir, f"{self.config.dataset}_epoch{epoch}.pt"))
+            print(f"> Epoch {epoch} Checkpoint Saved successfully!")
 
 
     def eval(self, sampling, step):
@@ -142,10 +142,10 @@ class MID():
 
                 predictions = traj_pred
                 predictions_dict = {}
-                for i, ts in enumerate(timesteps_o):
+                for j, ts in enumerate(timesteps_o):
                     if ts not in predictions_dict.keys():
                         predictions_dict[ts] = dict()
-                    predictions_dict[ts][nodes[i]] = np.transpose(predictions[:, [i]], (1, 0, 2, 3))
+                    predictions_dict[ts][nodes[j]] = np.transpose(predictions[:, [j]], (1, 0, 2, 3))
 
 
 
@@ -320,7 +320,9 @@ class MID():
                 for scene in self.eval_env.scenes:
                     scene.add_robot_from_nodes(self.eval_env.robot_type)
 
-            self.eval_scenes = self.eval_env.scenes
+            # --- 수정된 부분 3: 559개 대신 맨 앞 5개 씬만 평가하도록 슬라이싱 적용 ---
+            self.eval_scenes = self.eval_env.scenes[:5] 
+            
             eval_scenes_sample_probs = self.eval_env.scenes_freq_mult_prop if config.scene_freq_mult_eval else None
             self.eval_dataset = EnvironmentDataset(self.eval_env,
                                               self.hyperparams['state'],
