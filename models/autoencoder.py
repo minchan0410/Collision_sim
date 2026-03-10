@@ -29,11 +29,25 @@ class AutoEncoder(Module):
         z = self.encoder.get_latent(batch, node_type)
         return z
     
-    def generate(self, batch, node_type, num_points, sample, bestof,flexibility=0.0, ret_traj=False, sampling="ddpm", step=1):
-        #print(f"Using {sampling}")
+    def generate(self, batch, node_type, num_points, sample, bestof, flexibility=0.0, ret_traj=False, sampling="ddpm", step=1):
         dynamics = self.encoder.node_models_dict[node_type].dynamic
         encoded_x = self.encoder.get_latent(batch, node_type)
-        predicted_y_vel =  self.diffusion.sample(num_points, encoded_x,sample,bestof, flexibility=flexibility, ret_traj=ret_traj, sampling=sampling, step=step)
+        
+        # 1. Diffusion 모델은 이제 정규화된(-1 ~ 1) 스케일의 속도를 예측함
+        predicted_y_st_vel = self.diffusion.sample(num_points, encoded_x, sample, bestof, flexibility=flexibility, ret_traj=ret_traj, sampling=sampling, step=step)
+        
+        # 2. 정규화 복원 (Destandardization) 로직 추가
+        env = self.encoder.env
+        pred_state = self.encoder.pred_state
+        _, std = env.get_standardize_params(pred_state[node_type], node_type)
+        
+        # 텐서 연산을 위해 std를 GPU 텐서로 변환
+        std_tensor = torch.tensor(std, device=predicted_y_st_vel.device, dtype=torch.float32)
+        
+        # 예측된 정규화 속도에 표준편차를 곱해 실제 미터(m/s) 스케일로 복원
+        predicted_y_vel = predicted_y_st_vel * std_tensor
+        
+        # 3. 실제 스케일의 속도를 적분하여 위치로 변환
         predicted_y_pos = dynamics.integrate_samples(predicted_y_vel)
         return predicted_y_pos.cpu().detach().numpy()
 
@@ -45,6 +59,7 @@ class AutoEncoder(Module):
          robot_traj_st_t,
          map) = batch
 
-        feat_x_encoded = self.encode(batch,node_type) # B * 64
-        loss = self.diffusion.get_loss(y_t.cuda(), feat_x_encoded)
+        feat_x_encoded = self.encode(batch,node_type) 
+        # [확실하게 틀렸던 부분 수정] y_t 대신 y_st_t를 사용해야 함!
+        loss = self.diffusion.get_loss(y_st_t.cuda(), feat_x_encoded)
         return loss

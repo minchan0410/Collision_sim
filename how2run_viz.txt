@@ -1,1 +1,1 @@
-python visualize_checkpoint.py --config configs/baseline.yaml --dataset hotel --checkpoint experiments/baseline/eth_epoch100.pt --split test --num_examples 2 --num_samples 20 --output_dir viz_outputs_hotel
+python viz.py --config configs/mat.yaml --dataset mat_mini --checkpoint experiments/mat/mat_mini_epoch3.pt --split test --num_examples 2 --num_samples 100 --output_dir viz_outputs_mat

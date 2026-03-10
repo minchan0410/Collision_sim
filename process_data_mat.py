@@ -18,16 +18,16 @@ dt = 0.1
 standardization = {
     'PEDESTRIAN': {
         'position': {
-            'x': {'mean': 0, 'std': 1},
-            'y': {'mean': 0, 'std': 1}
+            'x': {'mean': 0, 'std': 31.43},
+            'y': {'mean': 0, 'std': 315.89}
         },
         'velocity': {
-            'x': {'mean': 0, 'std': 2},
-            'y': {'mean': 0, 'std': 2}
+            'x': {'mean': 0, 'std': 3.40},
+            'y': {'mean': 0, 'std': 10.66}
         },
         'acceleration': {
-            'x': {'mean': 0, 'std': 1},
-            'y': {'mean': 0, 'std': 1}
+            'x': {'mean': 0, 'std': 1.56},
+            'y': {'mean': 0, 'std': 1.78}
         }
     }
 }
@@ -74,9 +74,10 @@ def augment_scene(scene, angle):
     return scene_aug
 
 def augment(scene):
-    scene_aug = np.random.choice(scene.augmented)
-    scene_aug.temporal_scene_graph = scene.temporal_scene_graph
-    return scene_aug
+    # scene_aug = np.random.choice(scene.augmented)
+    # scene_aug.temporal_scene_graph = scene.temporal_scene_graph
+    # return scene_aug
+    return scene
 
 
 if __name__ == '__main__':
@@ -111,7 +112,7 @@ if __name__ == '__main__':
         
         env = Environment(node_type_list=['PEDESTRIAN'], standardization=standardization)
         attention_radius = dict()
-        attention_radius[(env.NodeType.PEDESTRIAN, env.NodeType.PEDESTRIAN)] = 3.0
+        attention_radius[(env.NodeType.PEDESTRIAN, env.NodeType.PEDESTRIAN)] = 50
         env.attention_radius = attention_radius
 
         scenes = []
@@ -178,10 +179,11 @@ if __name__ == '__main__':
                         scene.nodes.append(node)
                         
                     if base_class == 'train':
-                        scene.augmented = list()
-                        angles = np.arange(0, 360, 15)
-                        for angle in angles:
-                            scene.augmented.append(augment_scene(scene, angle))
+                        pass
+                        # scene.augmented = list()
+                        # angles = np.arange(0, 360, 15)
+                        # for angle in angles:
+                        #     scene.augmented.append(augment_scene(scene, angle))
 
                     scenes.append(scene)
                     

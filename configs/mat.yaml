@@ -7,12 +7,12 @@ data_dir: processed_data
 diffnet: TransformerConcatLinear #TransformerConcatLinear
 encoder_dim: 256
 tf_layer: 3
-epochs: 50
-batch_size: 512
+epochs: 200
+batch_size: 256
 eval_batch_size: 256
 k_eval: 25
 seed: 123
-eval_every: 50
+eval_every: 200
 # Testing
 eval_at: 100
 eval_mode: False

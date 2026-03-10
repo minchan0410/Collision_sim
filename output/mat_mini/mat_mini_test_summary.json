@@ -1,0 +1,36 @@
+{
+  "config": "/home/vic/Collision_sim/configs/mat.yaml",
+  "dataset": "mat_mini",
+  "split": "test",
+  "checkpoint": "/home/vic/Collision_sim/experiments/mat/mat_mini_epoch1.pt",
+  "device": "cuda",
+  "sampling": "ddpm",
+  "num_diffusion_steps": 100,
+  "num_samples": 20,
+  "bestof": true,
+  "seed": 123,
+  "examples": [
+    {
+      "scene_index": 33,
+      "scene_name": "mat_mini_test",
+      "timestep": 40,
+      "node_id": "1",
+      "score": 50.68423555312428,
+      "best_ade": 0.16859936883656293,
+      "best_fde": 0.39329566382673675,
+      "num_context_nodes": 0,
+      "output_file": "output/mat_mini/mat_mini_test_scene33_mat_mini_test_t40_node1.png"
+    },
+    {
+      "scene_index": 13,
+      "scene_name": "mat_mini_test",
+      "timestep": 40,
+      "node_id": "1",
+      "score": 50.684235553124275,
+      "best_ade": 0.3243354633204298,
+      "best_fde": 0.6197595689537556,
+      "num_context_nodes": 0,
+      "output_file": "output/mat_mini/mat_mini_test_scene13_mat_mini_test_t40_node1.png"
+    }
+  ]
+}
