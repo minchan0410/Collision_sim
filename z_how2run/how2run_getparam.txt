@@ -1,0 +1,21 @@
+getparam은 데이터셋에서 표준편차?를 구하고 process_data에서 표준차에 맞게 전처리 할 수 있게 하는 표준편차 입력값을 계산함.
+
+
+아래처럼 보이는게 나올텐데. 이걸 process_data_mat에 해당하는 x,y에 다 넣으면 됨.
+
+standardization = {
+    'PEDESTRIAN': {
+        'position': {
+            'x': {'mean': 0, 'std': 31.43},
+            'y': {'mean': 0, 'std': 315.89}
+        },
+        'velocity': {
+            'x': {'mean': 0, 'std': 3.40},
+            'y': {'mean': 0, 'std': 10.66}
+        },
+        'acceleration': {
+            'x': {'mean': 0, 'std': 1.56},
+            'y': {'mean': 0, 'std': 1.78}
+        }
+    }
+}

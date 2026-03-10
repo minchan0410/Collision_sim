@@ -8,6 +8,7 @@ main.py랑 baseline.yaml을 통해 train, test 생성을 둘 다 함.
 
 baseline.yaml에서 "eval_mode: False"로 두기.
 python main.py --config configs/baseline.yaml --dataset univ
+python main.py --config configs/mat.yaml --dataset mat_mini
 - univ 말고 eth, hotel, zara1, zara2로 해도 됨. 장소에 따라 다르게 학습을 하는거임.
 
 [Test]

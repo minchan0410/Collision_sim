@@ -1,4 +1,9 @@
 ############ MID Config #############
+# added config
+save_pt_every: 10
+viz_enabled: True
+viz_num_examples: 1
+viz_num_samples: 10
 # optimizer
 lr: 0.001
 # dataset

@@ -73,11 +73,20 @@ def augment_scene(scene, angle):
         
     return scene_aug
 
+# def augment(scene):
+#     # scene_aug = np.random.choice(scene.augmented)
+#     # scene_aug.temporal_scene_graph = scene.temporal_scene_graph
+#     # return scene_aug
+#     return scene
+
 def augment(scene):
-    # scene_aug = np.random.choice(scene.augmented)
-    # scene_aug.temporal_scene_graph = scene.temporal_scene_graph
-    # return scene_aug
-    return scene
+    # 원본 씬과 미세 회전된 씬들을 합쳐서 그 중 하나를 무작위로 선택
+    choices = [scene] + (scene.augmented if hasattr(scene, 'augmented') else [])
+    scene_aug = np.random.choice(choices)
+    
+    # 모델 학습에 필수적인 씬 그래프(주변 차량 관계망) 정보를 복사해줌
+    scene_aug.temporal_scene_graph = scene.temporal_scene_graph
+    return scene_aug
 
 
 if __name__ == '__main__':
@@ -179,11 +188,17 @@ if __name__ == '__main__':
                         scene.nodes.append(node)
                         
                     if base_class == 'train':
-                        pass
-                        # scene.augmented = list()
-                        # angles = np.arange(0, 360, 15)
-                        # for angle in angles:
-                        #     scene.augmented.append(augment_scene(scene, angle))
+                    #     pass
+                    #     # scene.augmented = list()
+                    #     # angles = np.arange(0, 360, 15)
+                    #     # for angle in angles:
+                    #     #     scene.augmented.append(augment_scene(scene, angle))
+                        scene.augmented = list()
+                        num_aug = 4
+                        angles = np.random.uniform(-3.0, 3.0, size=num_aug)
+                        
+                        for angle in angles:
+                            scene.augmented.append(augment_scene(scene, angle))
 
                     scenes.append(scene)
                     

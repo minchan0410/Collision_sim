@@ -1,0 +1,12 @@
+python viz.py --config configs/mat.yaml --dataset mat_mini --checkpoint experiments/mat/mat_mini_epoch1.pt --split test --num_examples 2 --num_samples 20 --output_dir output/mat_mini
+
+
+# ----------------- 설명 ----------------- #
+
+--config : 어떤 yaml 사용할지
+--dataset : 어떤 데이터셋 사용할지
+--checkpoint : 어떤 체크포인트 사용할지
+--split test : 어떤 데이터셋에서 테스트할지
+--num_examples 2 : 몇개 테스트?
+--num_samples 20 : 한 테스트 당 샘플 경로를 몇개 만들지
+--output_dir : output 경로 
