@@ -1,0 +1,80 @@
+## 0. getparam.py ## =====================================================================================================
+
+[getparam은 데이터셋에서 표준편차?를 구하고 process_data에서 표준차에 맞게 전처리 할 수 있게 하는 표준편차 입력값을 계산함.]
+
+
+아래처럼 보이는게 나올텐데. 이걸 process_data_mat에 해당하는 x,y에 다 넣으면 됨.
+
+standardization = {
+    'PEDESTRIAN': {
+        'position': {
+            'x': {'mean': 0, 'std': 31.43},
+            'y': {'mean': 0, 'std': 315.89}
+        },
+        'velocity': {
+            'x': {'mean': 0, 'std': 3.40},
+            'y': {'mean': 0, 'std': 10.66}
+        },
+        'acceleration': {
+            'x': {'mean': 0, 'std': 1.56},
+            'y': {'mean': 0, 'std': 1.78}
+        }
+    }
+}
+
+## 1. process_data(_mat).py ## ==========================================================================================================
+
+[학습에 필요한 pkl을 만듦]
+
+매트랩 데이터는 _mat으로 해야 함
+python process_data.py
+python process_data_mat.py --suffix collision
+--> train_collision test_collision..으로 데이터를 만듦
+
+## main.py ## ==========================================================================================================
+
+2. 훈련 및 검증
+[Train]
+
+baseline.yaml에서 "eval_mode: False"로 두기.
+python main.py --config configs/baseline.yaml --dataset univ
+- univ 말고 eth, hotel, zara1, zara2로 해도 됨. 장소에 따라 다르게 학습을 하는거임.
+
+
+python main.py --config configs/mat.yaml --dataset mat_mini
+pkl 데이터셋을 골라 줘야 함. mat_mini, mat_collision. 등 위 전처리에서 선택한 이름으로
+
+
+
+
+
+
+
+
+////////////////////////// 아래 쪽은 아직 수정이 필요.
+
+
+
+[Test]
+
+baseline.yaml에서 "eval_mode: True"로 두기, eval_at으로 몇 epoch짜리 모델을 돌릴지 결정.
+python main.py --config configs/baseline.yaml --dataset univ 
+훈련이랑 똑같이. 
+
+## process_data(_mat).py ## ============================================================================================
+
+그냥 돌리면 됨. _mat은 --suffix를 통해 mat_~ 에서 ~ 가 달려있으면 이걸 적어줘야 함.
+
+
+## viz.py ## ===========================================================================================================
+
+
+python viz.py --config configs/mat.yaml --dataset mat_mini --checkpoint experiments/mat/mat_mini_epoch1.pt --split test --num_examples 2 --num_samples 20 --output_dir output/mat_mini
+
+--config : 어떤 yaml 사용할지
+--dataset : 어떤 데이터셋 사용할지
+--checkpoint : 어떤 체크포인트 사용할지
+--split test : 어떤 데이터셋에서 테스트할지
+--num_examples 2 : 몇개 테스트?
+--num_samples 20 : 한 테스트 당 샘플 경로를 몇개 만들지
+--output_dir : output 경로 

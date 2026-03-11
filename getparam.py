@@ -5,7 +5,7 @@ import numpy as np
 # 설정값 (process_data_mat.py와 동일하게 맞춤)
 dt = 0.1
 base_input_dir = os.path.join('mat_preprocess', 'mat_txt')
-folders = ['train_mini', 'val_mini', 'test_mini']
+folders = ['collision_extract']
 
 all_positions_x = []
 all_positions_y = []

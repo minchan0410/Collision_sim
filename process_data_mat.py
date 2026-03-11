@@ -18,16 +18,16 @@ dt = 0.1
 standardization = {
     'PEDESTRIAN': {
         'position': {
-            'x': {'mean': 0, 'std': 31.43},
-            'y': {'mean': 0, 'std': 315.89}
+            'x': {'mean': 0, 'std': 6.22},
+            'y': {'mean': 0, 'std': 27.19}
         },
         'velocity': {
-            'x': {'mean': 0, 'std': 3.40},
-            'y': {'mean': 0, 'std': 10.66}
+            'x': {'mean': 0, 'std': 4.20},
+            'y': {'mean': 0, 'std': 9.82}
         },
         'acceleration': {
-            'x': {'mean': 0, 'std': 1.56},
-            'y': {'mean': 0, 'std': 1.78}
+            'x': {'mean': 0, 'std': 1.88},
+            'y': {'mean': 0, 'std': 2.68}
         }
     }
 }
