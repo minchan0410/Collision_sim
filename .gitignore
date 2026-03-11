@@ -5,7 +5,9 @@ experiments/*
 mat_preprocess/mat/*
 mat_preprocess/mat_check/*
 mat_preprocess/mat_txt/*
+!mat_preprocess/mat_txt/collision_extract/
 
 
 # 제외 확장자
 *.mat
+!mat_preprocess/mat_txt/collision_extract/**
