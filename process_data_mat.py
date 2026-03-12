@@ -195,7 +195,7 @@ if __name__ == '__main__':
                     #     #     scene.augmented.append(augment_scene(scene, angle))
                         scene.augmented = list()
                         num_aug = 4
-                        angles = np.random.uniform(-3.0, 3.0, size=num_aug)
+                        angles = np.random.uniform(-180.0, 180.0, size=num_aug)
                         
                         for angle in angles:
                             scene.augmented.append(augment_scene(scene, angle))

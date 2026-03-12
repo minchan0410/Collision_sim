@@ -1,9 +1,11 @@
 ############ MID Config #############
+# CN7: EGO_VEHICLE.WIDTH=1.825, LENGTH=4.650
+
 # added config
-save_pt_every: 1
+save_pt_every: 10
 viz_enabled: True
 viz_num_examples: 10
-viz_num_samples: 10
+viz_num_samples: 7
 # optimizer
 lr: 0.001
 # dataset

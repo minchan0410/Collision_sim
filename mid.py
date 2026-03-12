@@ -31,6 +31,75 @@ class MID():
         torch.backends.cudnn.benchmark = True
         self._build()
 
+    def _cache_and_validate_hyperparams(self):
+        self.ph = int(self.hyperparams['prediction_horizon'])
+        self.min_hl = int(self.hyperparams['minimum_history_length'])
+        self.max_hl = int(self.hyperparams['maximum_history_length'])
+
+        if self.ph <= 0:
+            raise ValueError(f"prediction_horizon must be positive, got {self.ph}")
+        if self.min_hl <= 0:
+            raise ValueError(f"minimum_history_length must be positive, got {self.min_hl}")
+        if self.max_hl <= 0:
+            raise ValueError(f"maximum_history_length must be positive, got {self.max_hl}")
+        if self.min_hl > self.max_hl:
+            raise ValueError(
+                f"minimum_history_length({self.min_hl}) cannot be larger than "
+                f"maximum_history_length({self.max_hl})"
+            )
+
+    def _get_vehicle_color_set(self, node_idx):
+        """
+        차량별 색상 세트를 반환합니다.
+        요구사항: 명도(Darkness) 순서가 hist > gt > pred 순으로 어두워야 함.
+        (hist가 가장 어둡고, 고쳐진 pred는 기존 pred보다 어두워야 함)
+        """
+        color_sets = [
+            # 세트 1 (파랑 계열)
+            {
+                "hist": "#011f4b",  # Darkest Navy (가장 어둠)
+                "gt":   "#005b96",  # Dark Blue
+                "pred": "#6497b1",  # Medium Blue (기존 파스텔보다 어둡지만 gt보단 밝음)
+                "curr": "#011f4b",  # hist와 동일하게 유지
+            },
+            # 세트 2 (빨강 계열)
+            {
+                "hist": "#4d0000",  # Darkest Maroon
+                "gt":   "#990000",  # Dark Red
+                "pred": "#cc4c4c",  # Medium Red
+                "curr": "#4d0000",
+            },
+            # 세트 3 (초록 계열)
+            {
+                "hist": "#003300",  # Darkest Deep Green
+                "gt":   "#1a8c1a",  # Dark Green
+                "pred": "#66b366",  # Medium Green
+                "curr": "#003300",
+            },
+            # 세트 4 (보라 계열)
+            {
+                "hist": "#2a0a4d",  # Darkest Indigo/Purple
+                "gt":   "#6a3d9a",  # Dark Purple
+                "pred": "#9966cc",  # Medium Purple
+                "curr": "#2a0a4d",
+            },
+            # 세트 5 (오렌지/브라운 계열)
+            {
+                "hist": "#4d1a00",  # Darkest Brown
+                "gt":   "#cc5200",  # Dark Orange/Rust
+                "pred": "#ffb366",  # Medium Orange
+                "curr": "#4d1a00",
+            },
+            # 세트 6 (청록/틸 계열)
+            {
+                "hist": "#003333",  # Darkest Teal
+                "gt":   "#008080",  # Teal
+                "pred": "#66cccc",  # Medium Teal
+                "curr": "#003333",
+            },
+        ]
+        return color_sets[node_idx % len(color_sets)]
+
     def train(self):
         for epoch in range(1, self.config.epochs + 1):
             self.train_dataset.augment = self.config.augment
@@ -54,8 +123,9 @@ class MID():
                 eval_ade_batch_errors = []
                 eval_fde_batch_errors = []
 
-                ph = self.hyperparams['prediction_horizon']
-                max_hl = self.hyperparams['maximum_history_length']
+                ph = self.ph
+                min_hl = self.min_hl
+                max_hl = self.max_hl
 
                 for i, scene in enumerate(self.eval_scenes):
                     print(f"----- Evaluating Scene {i + 1}/{len(self.eval_scenes)}")
@@ -69,8 +139,8 @@ class MID():
                             state=self.hyperparams['state'],
                             pred_state=self.hyperparams['pred_state'],
                             edge_types=self.eval_env.get_edge_types(),
-                            min_ht=7,
-                            max_ht=self.hyperparams['maximum_history_length'],
+                            min_ht=min_hl,
+                            max_ht=max_hl,
                             min_ft=ph,
                             max_ft=ph,
                             hyperparams=self.hyperparams
@@ -123,7 +193,7 @@ class MID():
                 self.model.train()
 
             # Checkpoint + visualization logic controlled by save_pt_every
-            save_pt_every = getattr(self.config, 'save_pt_every', 1)  # default: 1
+            save_pt_every = getattr(self.config, 'save_pt_every', 1)
             if save_pt_every > 0 and epoch % save_pt_every == 0:
                 checkpoint = {
                     'encoder': self.registrar.model_dict,
@@ -132,29 +202,24 @@ class MID():
                 torch.save(checkpoint, osp.join(self.model_dir, f"{self.config.dataset}_epoch{epoch}.pt"))
                 print(f"> Epoch {epoch} Checkpoint Saved successfully!")
 
-                # Run visualization when checkpoint is saved
                 if getattr(self.config, 'viz_enabled', True):
                     self._visualize_epoch(epoch)
 
-    # -----------------------------
-    # [CHANGED] Random scene/timestep visualization
-    # -----------------------------
     def _visualize_epoch(self, epoch):
         print(f"--- Generating Random Scene Visualizations for Epoch {epoch} ---")
 
-        # 전체 viz 폴더
         viz_root_dir = osp.join(self.model_dir, "viz_outputs")
         os.makedirs(viz_root_dir, exist_ok=True)
 
-        # 에폭별 하위 폴더
         epoch_viz_dir = osp.join(viz_root_dir, f"epoch_{epoch:04d}")
         os.makedirs(epoch_viz_dir, exist_ok=True)
 
         num_samples = getattr(self.config, "viz_num_samples", 50)
         sampling = getattr(self.config, "sampling", "ddpm")
 
-        ph = self.hyperparams['prediction_horizon']
-        max_hl = self.hyperparams['maximum_history_length']
+        ph = self.ph
+        min_hl = self.min_hl
+        max_hl = self.max_hl
         node_type = "PEDESTRIAN"
 
         if len(self.eval_scenes) == 0:
@@ -164,7 +229,6 @@ class MID():
         num_scenes_to_viz = getattr(self.config, "viz_num_examples", 2)
         num_scenes_to_viz = min(num_scenes_to_viz, len(self.eval_scenes))
 
-        # 전체 eval scene 중에서 랜덤 선택
         scene_indices = np.random.choice(
             len(self.eval_scenes),
             size=num_scenes_to_viz,
@@ -176,13 +240,12 @@ class MID():
         for scene_order, scene_idx in enumerate(scene_indices, start=1):
             scene = self.eval_scenes[int(scene_idx)]
 
-            # 이 scene에서 조건을 만족하는 timestep들을 모두 찾음
             valid_timesteps = []
-            for t_cand in range(max_hl, scene.timesteps - ph):
+            for t_cand in range(min_hl, scene.timesteps - ph):
                 present_cand = scene.present_nodes(
                     np.array([t_cand]),
                     type=node_type,
-                    min_history_timesteps=max_hl,
+                    min_history_timesteps=min_hl,
                     min_future_timesteps=ph
                 )
                 if t_cand in present_cand and len(present_cand[t_cand]) > 0:
@@ -192,13 +255,12 @@ class MID():
                 print(f"  [Warn] 씬 '{scene.name}'에는 조건을 만족하는 timestep이 없어 스킵합니다.")
                 continue
 
-            # 유효 timestep 중 랜덤 선택
             t = int(np.random.choice(valid_timesteps))
 
             present = scene.present_nodes(
                 np.array([t]),
                 type=node_type,
-                min_history_timesteps=max_hl,
+                min_history_timesteps=min_hl,
                 min_future_timesteps=ph
             )
 
@@ -206,13 +268,15 @@ class MID():
                 print(f"  [Warn] 씬 '{scene.name}'의 t={t}에서 유효 차량이 없어 스킵합니다.")
                 continue
 
-            print(f"  -> [{scene_order}/{num_scenes_to_viz}] 씬 '{scene.name}'에서 랜덤 시점 t={t}, 차량 {len(present[t])}대를 시각화합니다.")
+            nodes_at_t = sorted(list(present[t]), key=lambda n: str(n.id))
+            print(f"  -> [{scene_order}/{num_scenes_to_viz}] 씬 '{scene.name}'에서 랜덤 시점 t={t}, 차량 {len(nodes_at_t)}대를 시각화합니다.")
 
             fig, ax = plt.subplots(figsize=(10, 10))
             all_points_for_scale = []
 
-            # 현재 timestep에 존재하는 모든 차량 시각화
-            for node in present[t]:
+            for node_idx, node in enumerate(nodes_at_t):
+                colors = self._get_vehicle_color_set(node_idx)
+
                 history = node.get(np.array([t - max_hl, t]), {'position': ['x', 'y']})
                 future = node.get(np.array([t + 1, t + ph]), {'position': ['x', 'y']})
 
@@ -259,52 +323,57 @@ class MID():
                         sampling=sampling,
                         step=1
                     )
-                    predictions = predictions[:, 0]  # [num_samples, ph, 2]
+                    predictions = predictions[:, 0]
 
-                # Prediction samples
                 for pred in predictions:
                     pred_traj = np.vstack((history[-1:], pred))
                     ax.plot(
                         pred_traj[:, 0],
                         pred_traj[:, 1],
-                        '-o',
-                        color='#1f77b4',
-                        alpha=0.25,
-                        linewidth=1.2,
-                        markersize=3
+                        '-',
+                        color=colors["pred"],
+                        alpha=1,
+                        linewidth=1.5
+                        # markersize=3
                     )
 
-                # History
                 ax.plot(
                     history[:, 0],
                     history[:, 1],
                     '-o',
-                    color='black',
-                    linewidth=2,
-                    markersize=4
+                    color=colors["hist"],
+                    linewidth=2.2,
+                    markersize=3
                 )
 
-                # GT future
                 gt_traj = np.vstack((history[-1:], future))
                 ax.plot(
                     gt_traj[:, 0],
                     gt_traj[:, 1],
                     '-o',
-                    color='#2ca02c',
-                    linewidth=2,
-                    markersize=4,
+                    color=colors["gt"],
+                    linewidth=1.5,
+                    markersize=2,
                     alpha=0.8
                 )
 
-                # Current position
                 ax.scatter(
                     history[-1, 0],
                     history[-1, 1],
-                    color='black',
-                    s=80,
+                    color=colors["curr"],
+                    s=90,
                     edgecolors='white',
                     linewidths=1.5,
                     zorder=5
+                )
+
+                ax.text(
+                    history[-1, 0] + 2,
+                    history[-1, 1] + 1,
+                    f"ID {node.id}",
+                    color=colors["hist"],
+                    fontsize=9,
+                    fontweight='bold'
                 )
 
                 all_points_for_scale.extend(history)
@@ -315,7 +384,6 @@ class MID():
                 plt.close(fig)
                 continue
 
-            # Dynamic axis scaling
             all_points = np.array(all_points_for_scale)
             x_min, y_min = np.min(all_points, axis=0)
             x_max, y_max = np.max(all_points, axis=0)
@@ -330,17 +398,15 @@ class MID():
             ax.set_aspect('equal', adjustable='box')
             ax.grid(alpha=0.3)
 
-            # Legend
             import matplotlib.lines as mlines
             hist_line = mlines.Line2D([], [], color='black', marker='o', markersize=4, label='History')
-            gt_line = mlines.Line2D([], [], color='#2ca02c', marker='o', markersize=4, label='GT Future')
-            pred_line = mlines.Line2D([], [], color='#1f77b4', marker='o', markersize=3, label='Predictions')
+            gt_line = mlines.Line2D([], [], color='dimgray', marker='o', markersize=4, label='GT Future')
+            pred_line = mlines.Line2D([], [], color='lightgray', marker='o', markersize=3, label='Predictions')
             curr_point = mlines.Line2D([], [], color='white', marker='o', markerfacecolor='black', markersize=8, label='Current Pos')
             ax.legend(handles=[hist_line, gt_line, pred_line, curr_point], loc='best')
 
             ax.set_title(f"Epoch {epoch} | Random Scene: {scene.name} | t={t}")
 
-            # 에폭별 폴더에 저장
             out_file = osp.join(epoch_viz_dir, f"scene_{scene.name}_t_{t}.png")
             fig.savefig(out_file, dpi=200, bbox_inches='tight')
             plt.close(fig)
@@ -357,8 +423,10 @@ class MID():
         node_type = "PEDESTRIAN"
         eval_ade_batch_errors = []
         eval_fde_batch_errors = []
-        ph = self.hyperparams['prediction_horizon']
-        max_hl = self.hyperparams['maximum_history_length']
+
+        ph = self.ph
+        min_hl = self.min_hl
+        max_hl = self.max_hl
 
         for i, scene in enumerate(self.eval_scenes):
             print(f"----- Evaluating Scene {i + 1}/{len(self.eval_scenes)}")
@@ -372,8 +440,8 @@ class MID():
                     state=self.hyperparams['state'],
                     pred_state=self.hyperparams['pred_state'],
                     edge_types=self.eval_env.get_edge_types(),
-                    min_ht=ph,
-                    max_ht=self.hyperparams['maximum_history_length'],
+                    min_ht=min_hl,
+                    max_ht=max_hl,
                     min_ft=ph,
                     max_ft=ph,
                     hyperparams=self.hyperparams
@@ -393,7 +461,7 @@ class MID():
                     bestof=True,
                     sampling=sampling,
                     step=step
-                )  # B * 20 * 12 * 2
+                )
 
                 predictions = traj_pred
                 predictions_dict = {}
@@ -487,12 +555,12 @@ class MID():
         self.hyperparams['enc_rnn_dim_history'] = self.config.encoder_dim // 2
         self.hyperparams['enc_rnn_dim_future'] = self.config.encoder_dim // 2
 
-        # registrar
+        self._cache_and_validate_hyperparams()
+
         self.registrar = ModelRegistrar(self.model_dir, "cuda")
 
         if self.config.eval_mode:
             epoch = self.config.eval_at
-            checkpoint_dir = osp.join(self.model_dir, f"{self.config.dataset}_epoch{epoch}.pt")
             self.checkpoint = torch.load(
                 osp.join(self.model_dir, f"{self.config.dataset}_epoch{epoch}.pt"),
                 map_location="cpu"
@@ -510,7 +578,6 @@ class MID():
         self.encoder.set_annealing_params()
 
     def _build_model(self):
-        """ Define Model """
         config = self.config
         model = AutoEncoder(config, encoder=self.encoder)
 
@@ -541,8 +608,8 @@ class MID():
             scene_freq_mult=self.hyperparams['scene_freq_mult_train'],
             node_freq_mult=self.hyperparams['node_freq_mult_train'],
             hyperparams=self.hyperparams,
-            min_history_timesteps=1,
-            min_future_timesteps=self.hyperparams['prediction_horizon'],
+            min_history_timesteps=self.min_hl,
+            min_future_timesteps=self.ph,
             return_robot=not self.config.incl_robot_node
         )
 
@@ -576,9 +643,6 @@ class MID():
                 for scene in self.eval_env.scenes:
                     scene.add_robot_from_nodes(self.eval_env.robot_type)
 
-            # -----------------------------
-            # [CHANGED] Use all evaluation scenes
-            # -----------------------------
             self.eval_scenes = self.eval_env.scenes
 
             eval_scenes_sample_probs = self.eval_env.scenes_freq_mult_prop if config.scene_freq_mult_eval else None
@@ -590,8 +654,8 @@ class MID():
                 scene_freq_mult=self.hyperparams['scene_freq_mult_eval'],
                 node_freq_mult=self.hyperparams['node_freq_mult_eval'],
                 hyperparams=self.hyperparams,
-                min_history_timesteps=self.hyperparams['minimum_history_length'],
-                min_future_timesteps=self.hyperparams['prediction_horizon'],
+                min_history_timesteps=self.min_hl,
+                min_future_timesteps=self.ph,
                 return_robot=not config.incl_robot_node
             )
 
@@ -625,5 +689,5 @@ class MID():
                     self.eval_env.attention_radius,
                     self.hyperparams['edge_addition_filter'],
                     self.hyperparams['edge_removal_filter']
-                )                                                                                          
+                )
                 print(f"Created Scene Graph for Evaluation Scene {i}")

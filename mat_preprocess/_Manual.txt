@@ -36,7 +36,7 @@ python mat_preprocess/almost_collision.py (default 값 코드에서 설정함)
 
 [데이터를 train_ test_ val_ 로 나누는 코드]
 
-python mat_preprocess/split_data.py --train 8 --val 1 --test 1 --suffix collision --use_ratio 0.02
+python mat_preprocess/split_data.py --train 8 --val 1 --test 1 --suffix collision --use_ratio 1
 
 --train val test 비율.
 --suffix : train_~ 에서 ~를 정할 수 있음.
