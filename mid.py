@@ -7,6 +7,7 @@ import numpy as np
 import os.path as osp
 import logging
 import time
+import re
 from torch import nn, optim, utils
 import torch.nn as nn
 from tensorboardX import SummaryWriter
@@ -47,6 +48,95 @@ class MID():
                 f"minimum_history_length({self.min_hl}) cannot be larger than "
                 f"maximum_history_length({self.max_hl})"
             )
+
+
+    @staticmethod
+    def _extract_numeric_node_id(node):
+        raw_id = getattr(node, "id", node)
+
+        if isinstance(raw_id, (int, np.integer)):
+            return int(raw_id)
+
+        if isinstance(raw_id, float) and float(raw_id).is_integer():
+            return int(raw_id)
+
+        raw_id_str = str(raw_id).strip()
+
+        try:
+            raw_id_float = float(raw_id_str)
+            if raw_id_float.is_integer():
+                return int(raw_id_float)
+        except Exception:
+            pass
+
+        match = re.search(r"-?\d+", raw_id_str)
+        if match:
+            return int(match.group())
+
+        return None
+
+    def _node_sort_tuple(self, node):
+        numeric_id = self._extract_numeric_node_id(node)
+        if numeric_id is not None:
+            return (0, numeric_id, str(getattr(node, "id", "")))
+        return (1, float("inf"), str(getattr(node, "id", "")))
+
+    def _resolve_scene_ego_node(self, scene):
+        scene_nodes = list(getattr(scene, "nodes", []))
+
+        explicit_ego_nodes = [
+            node for node in scene_nodes
+            if "ego" in str(getattr(node, "description", "") or "").lower()
+        ]
+        if explicit_ego_nodes:
+            return sorted(explicit_ego_nodes, key=self._node_sort_tuple)[0]
+
+        numeric_nodes = []
+        for node in scene_nodes:
+            numeric_id = self._extract_numeric_node_id(node)
+            if numeric_id is not None:
+                numeric_nodes.append((numeric_id, node))
+
+        if not numeric_nodes:
+            return None
+
+        # mat_preprocess/mat2txt.py 기준:
+        #   next_track_id = 1 에서 시작하고 Ego를 먼저 rows에 기록한 뒤,
+        #   그 다음에 Traffic(agent) track_id를 순차적으로 부여한다.
+        # 따라서 현재 파이프라인(process_data_mat.py -> MID)에서는
+        # 가장 작은 track_id(보통 1)가 Ego 차량이다.
+        ego_candidates = [node for numeric_id, node in numeric_nodes if numeric_id == 1]
+        if ego_candidates:
+            return sorted(ego_candidates, key=self._node_sort_tuple)[0]
+
+        return min(numeric_nodes, key=lambda item: (item[0], self._node_sort_tuple(item[1])))[1]
+
+    def _resolve_visual_role_labels(self, scene, nodes_at_t):
+        nodes_at_t = list(nodes_at_t)
+        if len(nodes_at_t) == 0:
+            return {}
+
+        ego_node = self._resolve_scene_ego_node(scene)
+        role_labels = {}
+
+        if ego_node in nodes_at_t:
+            role_labels[ego_node] = f"Ego"
+
+        opponents = [node for node in nodes_at_t if node is not ego_node]
+        opponents = sorted(opponents, key=self._node_sort_tuple)
+
+        only_one_opponent = len(opponents) == 1
+        for opp_idx, node in enumerate(opponents, start=1):
+            prefix = "Target" if only_one_opponent else f"Opponent {opp_idx}"
+            role_labels[node] = f"{prefix}"
+
+        # Ego가 현재 timestep에 없고 단일 차량만 존재하는 경우에는
+        # 잘못 Ego로 단정하지 않고 원래 id를 유지한다.
+        if ego_node not in nodes_at_t and len(opponents) == 1:
+            only_node = opponents[0]
+            role_labels[only_node] = f"ID {only_node.id}"
+
+        return role_labels
 
     def _get_vehicle_color_set(self, node_idx):
         """
@@ -268,7 +358,17 @@ class MID():
                 print(f"  [Warn] 씬 '{scene.name}'의 t={t}에서 유효 차량이 없어 스킵합니다.")
                 continue
 
-            nodes_at_t = sorted(list(present[t]), key=lambda n: str(n.id))
+            raw_nodes_at_t = list(present[t])
+            role_labels = self._resolve_visual_role_labels(scene, raw_nodes_at_t)
+            ego_node = self._resolve_scene_ego_node(scene)
+
+            nodes_at_t = sorted(
+                raw_nodes_at_t,
+                key=lambda n: (
+                    0 if n is ego_node else 1,
+                    *self._node_sort_tuple(n)
+                )
+            )
             print(f"  -> [{scene_order}/{num_scenes_to_viz}] 씬 '{scene.name}'에서 랜덤 시점 t={t}, 차량 {len(nodes_at_t)}대를 시각화합니다.")
 
             fig, ax = plt.subplots(figsize=(10, 10))
@@ -367,10 +467,12 @@ class MID():
                     zorder=5
                 )
 
+                display_label = role_labels.get(node, f"ID {node.id}")
+
                 ax.text(
                     history[-1, 0] + 2,
                     history[-1, 1] + 1,
-                    f"ID {node.id}",
+                    display_label,
                     color=colors["hist"],
                     fontsize=9,
                     fontweight='bold'
@@ -405,9 +507,16 @@ class MID():
             curr_point = mlines.Line2D([], [], color='white', marker='o', markerfacecolor='black', markersize=8, label='Current Pos')
             ax.legend(handles=[hist_line, gt_line, pred_line, curr_point], loc='best')
 
-            ax.set_title(f"Epoch {epoch} | Random Scene: {scene.name} | t={t}")
+            ax.set_title(
+                f"Epoch {epoch} | Scene #{scene_order} (idx={int(scene_idx)}) | "
+                f"{scene.name} | t={t}"
+            )
 
-            out_file = osp.join(epoch_viz_dir, f"scene_{scene.name}_t_{t}.png")
+            safe_scene_name = str(scene.name).replace("/", "_").replace("\\", "_")
+            out_file = osp.join(
+                epoch_viz_dir,
+                f"scene_{scene_order:02d}_idx_{int(scene_idx):04d}_{safe_scene_name}_t_{t}.png"
+            )
             fig.savefig(out_file, dpi=200, bbox_inches='tight')
             plt.close(fig)
 

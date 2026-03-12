@@ -159,7 +159,6 @@ def main() -> None:
     parser.add_argument("--threshold-m", type=float, default=3.0, help="거리 임계값 n (meter)")
     parser.add_argument("--before-sec", type=float, default=4.0, help="최소거리 시점 이전 구간 (초)")
     parser.add_argument("--after-sec", type=float, default=0.5, help="최소거리 시점 이후 구간 (초)")
-    # 정지 차량 판별을 위한 파라미터 추가
     parser.add_argument("--min-movement-m", type=float, default=2.0, help="차량의 최소 이동 거리 (초기값: 2.0m)")
     parser.add_argument(
         "--sampled-dt",
