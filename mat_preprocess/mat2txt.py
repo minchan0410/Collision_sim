@@ -3,12 +3,11 @@
 Convert MAT driving scenarios into MID raw txt trajectories.
 
 Output format per line:
-  frame_id<TAB>track_id<TAB>pos_x<TAB>pos_y
+  frame_id<TAB>track_id<TAB>pos_x<TAB>pos_y<TAB>yaw_rad
 
 Design choices for MID compatibility:
-- We downsample each MAT sequence to one point every 0.4 seconds.
-- We write raw frame ids as 0, 10, 20, ... so MID's process_data.py can keep
-  using `frame_id // 10` and `dt = 0.4` without modification.
+- Downsample each MAT sequence to one point every target-dt seconds.
+- Write raw frame ids as 0, 10, 20, ... by default for compatibility.
 - Only files listed in pass_list are processed.
 - All output txt files are written into a single flat folder.
 
@@ -36,6 +35,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
+import yaml
 
 try:
     import scipy.io as sio  # type: ignore
@@ -191,6 +191,7 @@ class TrackSegment:
     frames: np.ndarray
     x: np.ndarray
     y: np.ndarray
+    yaw: np.ndarray
     source: str
 
     @property
@@ -244,10 +245,79 @@ def safe_output_name(source_rel: str) -> str:
     return no_suffix.replace("/", "__").replace("\\", "__") + ".txt"
 
 
+def wrap_to_pi(angle: np.ndarray) -> np.ndarray:
+    return (angle + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def build_yaw_series(
+    x: np.ndarray,
+    y: np.ndarray,
+    valid_mask: np.ndarray,
+    *,
+    raw_yaw: Optional[np.ndarray] = None,
+    speed_eps: float = 1.0e-3,
+) -> np.ndarray:
+    """
+    Build a finite yaw sequence in radians.
+    Priority:
+    1) use provided raw yaw where finite,
+    2) otherwise use motion direction from consecutive (x, y),
+    3) otherwise forward/backward fill.
+    """
+    n = int(x.size)
+    if n == 0:
+        return np.zeros((0,), dtype=float)
+
+    yaw = np.full((n,), np.nan, dtype=float)
+
+    if raw_yaw is not None:
+        raw = as_numeric_1d(raw_yaw, name="raw_yaw")
+        if raw.size != n:
+            raise ValueError(f"raw_yaw length mismatch: expected {n}, got {raw.size}")
+        raw = raw.astype(float)
+        finite_raw = np.isfinite(raw)
+        yaw[finite_raw] = wrap_to_pi(raw[finite_raw])
+
+    motion_yaw = np.full((n,), np.nan, dtype=float)
+    if n >= 2:
+        dx = np.diff(x)
+        dy = np.diff(y)
+        speed = np.hypot(dx, dy)
+        valid_pair = (
+            valid_mask[:-1]
+            & valid_mask[1:]
+            & np.isfinite(dx)
+            & np.isfinite(dy)
+            & (speed > speed_eps)
+        )
+        motion_yaw[:-1][valid_pair] = np.arctan2(dy[valid_pair], dx[valid_pair])
+        motion_yaw[-1] = motion_yaw[-2]
+
+    missing = ~np.isfinite(yaw)
+    yaw[missing] = motion_yaw[missing]
+
+    finite = np.isfinite(yaw)
+    if not np.any(finite):
+        yaw.fill(0.0)
+        return yaw
+
+    first_valid = int(np.flatnonzero(finite)[0])
+    yaw[:first_valid] = yaw[first_valid]
+    prev = float(yaw[first_valid])
+    for i in range(first_valid + 1, n):
+        if np.isfinite(yaw[i]):
+            prev = float(yaw[i])
+        else:
+            yaw[i] = prev
+
+    return wrap_to_pi(yaw)
+
+
 def split_contiguous_segments(
     frames: np.ndarray,
     x: np.ndarray,
     y: np.ndarray,
+    yaw: np.ndarray,
     valid_mask: np.ndarray,
     *,
     raw_frame_step: int,
@@ -256,7 +326,7 @@ def split_contiguous_segments(
     track_id_start: int,
     source_label: str,
 ) -> Tuple[List[TrackSegment], int]:
-    assert frames.shape == x.shape == y.shape == valid_mask.shape
+    assert frames.shape == x.shape == y.shape == yaw.shape == valid_mask.shape
 
     segments: List[TrackSegment] = []
     n = len(frames)
@@ -286,6 +356,7 @@ def split_contiguous_segments(
                     frames=frames[start:end].copy(),
                     x=x[start:end].copy(),
                     y=y[start:end].copy(),
+                    yaw=yaw[start:end].copy(),
                     source=source_label,
                 )
             )
@@ -334,7 +405,7 @@ def convert_one_file(
 
         raw_frames = np.arange(sample_idx.size, dtype=int) * int(raw_frame_step)
 
-        rows: List[Tuple[int, int, float, float]] = []
+        rows: List[Tuple[int, int, float, float, float]] = []
         next_track_id = 1
         num_ego_tracks = 0
         num_traffic_tracks = 0
@@ -343,26 +414,29 @@ def convert_one_file(
         ego_x = as_numeric_1d(accessor.get("Car_Con_tx"), name="Car_Con_tx")[sample_idx]
         ego_y = as_numeric_1d(accessor.get("Car_Con_ty"), name="Car_Con_ty")[sample_idx]
         ego_valid = np.isfinite(ego_x) & np.isfinite(ego_y)
+        ego_raw_yaw = as_numeric_1d(accessor.get("Car_Yaw"), name="Car_Yaw")[sample_idx]
+        ego_yaw = build_yaw_series(ego_x, ego_y, ego_valid, raw_yaw=ego_raw_yaw)
         ego_segments, next_track_id = split_contiguous_segments(
-            frames=raw_frames, x=ego_x, y=ego_y, valid_mask=ego_valid,
+            frames=raw_frames, x=ego_x, y=ego_y, yaw=ego_yaw, valid_mask=ego_valid,
             raw_frame_step=raw_frame_step, jump_threshold_m=jump_threshold_m,
             min_points=min_points_per_track, track_id_start=next_track_id, source_label="ego",
         )
         num_ego_tracks = len(ego_segments)
         for seg in ego_segments:
-            for fr, x_val, y_val in zip(seg.frames, seg.x, seg.y):
-                rows.append((int(fr), int(seg.track_id), float(x_val), float(y_val)))
+            for fr, x_val, y_val, yaw_val in zip(seg.frames, seg.x, seg.y, seg.yaw):
+                rows.append((int(fr), int(seg.track_id), float(x_val), float(y_val), float(yaw_val)))
 
         # Traffic agents
-        traffic_slots: List[Tuple[int, str, str]] = []
+        traffic_slots: List[Tuple[int, str, str, str]] = []
         for key in accessor.keys():
             match = TRAFFIC_TX_RE.match(key)
             if not match:
                 continue
-            slot_idx = int(match.group(1))
-            ty_key = f"Traffic_T{match.group(1)}_ty"
+            slot_token = match.group(1)
+            slot_idx = int(slot_token)
+            ty_key = f"Traffic_T{slot_token}_ty"
             if accessor.has(ty_key):
-                traffic_slots.append((slot_idx, key, ty_key))
+                traffic_slots.append((slot_idx, slot_token, key, ty_key))
         traffic_slots.sort(key=lambda item: item[0])
 
         n_objs = None
@@ -372,7 +446,7 @@ def convert_one_file(
             except Exception:
                 n_objs = None
 
-        for slot_idx, tx_key, ty_key in traffic_slots:
+        for slot_idx, slot_token, tx_key, ty_key in traffic_slots:
             tx = as_numeric_1d(accessor.get(tx_key), name=tx_key)[sample_idx]
             ty = as_numeric_1d(accessor.get(ty_key), name=ty_key)[sample_idx]
             valid = np.isfinite(tx) & np.isfinite(ty)
@@ -388,8 +462,23 @@ def convert_one_file(
             if n_objs is not None:
                 valid &= n_objs > slot_idx
 
+            traffic_raw_yaw = None
+            for yaw_key in (
+                f"Traffic_T{slot_token}_rz",
+                f"Traffic_T{slot_token}_Yaw",
+                f"Traffic_T{slot_token}_yaw",
+            ):
+                if accessor.has(yaw_key):
+                    try:
+                        traffic_raw_yaw = as_numeric_1d(accessor.get(yaw_key), name=yaw_key)[sample_idx]
+                        break
+                    except Exception:
+                        traffic_raw_yaw = None
+
+            traffic_yaw = build_yaw_series(tx, ty, valid, raw_yaw=traffic_raw_yaw)
+
             segments, next_track_id = split_contiguous_segments(
-                frames=raw_frames, x=tx, y=ty, valid_mask=valid,
+                frames=raw_frames, x=tx, y=ty, yaw=traffic_yaw, valid_mask=valid,
                 raw_frame_step=raw_frame_step, jump_threshold_m=jump_threshold_m,
                 min_points=min_points_per_track, track_id_start=next_track_id,
                 source_label=f"traffic_slot_{slot_idx:02d}",
@@ -397,16 +486,16 @@ def convert_one_file(
 
             num_traffic_tracks += len(segments)
             for seg in segments:
-                for fr, x_val, y_val in zip(seg.frames, seg.x, seg.y):
-                    rows.append((int(fr), int(seg.track_id), float(x_val), float(y_val)))
+                for fr, x_val, y_val, yaw_val in zip(seg.frames, seg.x, seg.y, seg.yaw):
+                    rows.append((int(fr), int(seg.track_id), float(x_val), float(y_val), float(yaw_val)))
 
         rows.sort(key=lambda item: (item[0], item[1]))
 
         out_name = safe_output_name(source_rel)
         out_path = out_dir / out_name
         with out_path.open("w", encoding="utf-8", newline="") as f:
-            for frame_id, track_id, pos_x, pos_y in rows:
-                f.write(f"{frame_id}\t{track_id}\t{pos_x:.6f}\t{pos_y:.6f}\n")
+            for frame_id, track_id, pos_x, pos_y, yaw in rows:
+                f.write(f"{frame_id}\t{track_id}\t{pos_x:.6f}\t{pos_y:.6f}\t{yaw:.6f}\n")
 
         return ConversionResult(
             source_rel=source_rel,
@@ -487,12 +576,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--in-root", required=True, help="Root folder that contains the MAT files.")
     parser.add_argument("--pass-list", required=True, help="Path to pass_list.txt.")
     parser.add_argument("--out-dir", required=True, help="Single flat output folder for txt files.")
-    parser.add_argument("--target-dt", type=float, default=0.1, help="Target time step after downsampling. Default: 0.4")
     parser.add_argument("--raw-frame-step", type=int, default=10, help="Raw frame increment written to txt. Default: 10")
     parser.add_argument("--jump-threshold-m", type=float, default=20.0, help="Split track if sampled displacement exceeds this value. Default: 20.0")
     parser.add_argument("--min-points-per-track", type=int, default=2, help="Minimum sampled points per exported track. Default: 2")
     parser.add_argument("--progress-every", type=int, default=50, help="Print progress every N files. Default: 50")
     return parser.parse_args()
+
+
+def _load_data_dt_from_mat_yaml() -> float:
+    config_path = Path("configs") / "mat.yaml"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Required config not found: {config_path}")
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError(f"Invalid YAML content in {config_path}")
+    if "data_dt" not in cfg:
+        raise KeyError(f"'data_dt' is missing in {config_path}")
+
+    dt = float(cfg["data_dt"])
+    if dt <= 0:
+        raise ValueError(f"'data_dt' must be positive in {config_path}, got {dt}")
+    return dt
 
 
 def main() -> None:
@@ -501,6 +607,9 @@ def main() -> None:
     pass_list_path = Path(args.pass_list).resolve()
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    target_dt = _load_data_dt_from_mat_yaml()
+    if target_dt <= 0:
+        raise ValueError(f"target_dt must be positive, got {target_dt}")
 
     pass_entries = read_pass_list(pass_list_path)
     basename_index = build_basename_index(in_root)
@@ -538,7 +647,7 @@ def main() -> None:
                 "path": mat_path,
                 "source_rel": source_rel,
                 "out_dir": out_dir,
-                "target_dt": float(args.target_dt),
+                "target_dt": float(target_dt),
                 "raw_frame_step": int(args.raw_frame_step),
                 "jump_threshold_m": float(args.jump_threshold_m),
                 "min_points_per_track": int(args.min_points_per_track),
@@ -615,6 +724,7 @@ def main() -> None:
     print(f"  converted: {ok_count}")
     print(f"  skipped: {skip_count}")
     print(f"  errors: {error_count}")
+    print(f"  target_dt(sec): {target_dt}")
     print(f"  out_dir: {out_dir}")
 
 if __name__ == "__main__":

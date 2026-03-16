@@ -37,6 +37,7 @@ class PositionalEncoding(nn.Module):
         super().__init__()
 
         self.dropout = nn.Dropout(p=dropout)
+        self.d_model = int(d_model)
 
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
@@ -48,8 +49,25 @@ class PositionalEncoding(nn.Module):
         pe = pe.unsqueeze(0).transpose(0, 1)
         self.register_buffer("pe", pe)
 
+    def _build_pe(self, length, device, dtype):
+        pe = torch.zeros(length, self.d_model, device=device, dtype=dtype)
+        position = torch.arange(0, length, device=device, dtype=dtype).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, self.d_model, 2, device=device, dtype=dtype) *
+            (-math.log(10000.0) / self.d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        return pe.unsqueeze(1)  # [L, 1, D]
+
     def forward(self, x):
-        x = x + self.pe[: x.size(0), :]
+        seq_len = x.size(0)
+        if seq_len <= self.pe.size(0):
+            pe = self.pe[:seq_len].to(device=x.device, dtype=x.dtype)
+        else:
+            # Runtime extension for long horizons while keeping checkpoint compatibility.
+            pe = self._build_pe(seq_len, device=x.device, dtype=x.dtype)
+        x = x + pe
         return self.dropout(x)
 
 

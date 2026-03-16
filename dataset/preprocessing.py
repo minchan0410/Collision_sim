@@ -90,7 +90,9 @@ def get_node_timestep_data(env, scene, t, node, state, pred_state,
 
     x = node.get(timestep_range_x, state[node.type])
     y = node.get(timestep_range_y, pred_state[node.type])
-    first_history_index = (max_ht - node.history_points_at(t)).clip(0)
+    history_points = np.asarray(node.history_points_at(t), dtype=np.float64).reshape(-1)[-1]
+    history_points = float(np.nan_to_num(history_points, nan=0.0, posinf=float(max_ht), neginf=0.0))
+    first_history_index = int(np.clip(max_ht - history_points, 0, max_ht))
 
     _, std = env.get_standardize_params(state[node.type], node.type)
     std[0:2] = env.attention_radius[(node.type, node.type)]

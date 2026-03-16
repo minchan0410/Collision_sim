@@ -24,6 +24,8 @@ import evaluation
 import matplotlib
 matplotlib.use("Agg")  # Save images without display server
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from matplotlib.patches import Polygon
 
 
 class MID():
@@ -149,48 +151,425 @@ class MID():
             {
                 "hist": "#011f4b",  # Darkest Navy (가장 어둠)
                 "gt":   "#005b96",  # Dark Blue
-                "pred": "#6497b1",  # Medium Blue (기존 파스텔보다 어둡지만 gt보단 밝음)
+                "pred": "#2f6f95",  # Darker Blue
                 "curr": "#011f4b",  # hist와 동일하게 유지
             },
             # 세트 2 (빨강 계열)
             {
                 "hist": "#4d0000",  # Darkest Maroon
                 "gt":   "#990000",  # Dark Red
-                "pred": "#cc4c4c",  # Medium Red
+                "pred": "#b03030",  # Darker Red
                 "curr": "#4d0000",
             },
             # 세트 3 (초록 계열)
             {
                 "hist": "#003300",  # Darkest Deep Green
                 "gt":   "#1a8c1a",  # Dark Green
-                "pred": "#66b366",  # Medium Green
+                "pred": "#3f8f3f",  # Darker Green
                 "curr": "#003300",
             },
             # 세트 4 (보라 계열)
             {
                 "hist": "#2a0a4d",  # Darkest Indigo/Purple
                 "gt":   "#6a3d9a",  # Dark Purple
-                "pred": "#9966cc",  # Medium Purple
+                "pred": "#7d52b3",  # Darker Purple
                 "curr": "#2a0a4d",
             },
             # 세트 5 (오렌지/브라운 계열)
             {
                 "hist": "#4d1a00",  # Darkest Brown
                 "gt":   "#cc5200",  # Dark Orange/Rust
-                "pred": "#ffb366",  # Medium Orange
+                "pred": "#d9872e",  # Darker Orange
                 "curr": "#4d1a00",
             },
             # 세트 6 (청록/틸 계열)
             {
                 "hist": "#003333",  # Darkest Teal
                 "gt":   "#008080",  # Teal
-                "pred": "#66cccc",  # Medium Teal
+                "pred": "#3f9f9f",  # Darker Teal
                 "curr": "#003333",
             },
         ]
         return color_sets[node_idx % len(color_sets)]
 
+    @staticmethod
+    def _compute_yaw_from_positions(traj, default_yaw=0.0, speed_eps=1e-4):
+        """
+        Estimate yaw (rad) from a position trajectory.
+        Low-speed segments keep the previous yaw to avoid unstable flips.
+        """
+        traj = np.asarray(traj, dtype=np.float32)
+        if traj.ndim != 2 or traj.shape[0] == 0:
+            return np.zeros((0,), dtype=np.float32)
+
+        n = traj.shape[0]
+        yaws = np.full((n,), float(default_yaw), dtype=np.float32)
+        if n == 1:
+            return yaws
+
+        deltas = np.diff(traj, axis=0)
+        speeds = np.linalg.norm(deltas, axis=1)
+        prev_yaw = float(default_yaw)
+
+        for i in range(n - 1):
+            if speeds[i] > speed_eps:
+                prev_yaw = float(np.arctan2(deltas[i, 1], deltas[i, 0]))
+            yaws[i] = prev_yaw
+
+        yaws[-1] = prev_yaw
+        return yaws
+
+    @staticmethod
+    def _draw_vehicle_rectangles(
+        ax,
+        traj,
+        yaws,
+        car_length,
+        car_width,
+        color,
+        alpha=0.2,
+        linewidth=0.6,
+        zorder=2,
+        stride=1,
+        edge_style="dark",
+        overlap_darkening=False,
+    ):
+        """
+        Draw oriented vehicle rectangles at each trajectory point.
+        """
+        traj = np.asarray(traj, dtype=np.float32)
+        yaws = np.asarray(yaws, dtype=np.float32)
+        if traj.ndim != 2 or traj.shape[0] == 0:
+            return
+
+        stride = max(1, int(stride))
+        half_l = 0.5 * float(car_length)
+        half_w = 0.5 * float(car_width)
+
+        local_corners = np.array(
+            [
+                [half_l, half_w],
+                [half_l, -half_w],
+                [-half_l, -half_w],
+                [-half_l, half_w],
+            ],
+            dtype=np.float32,
+        )
+        base_rgb = np.array(mcolors.to_rgb(color), dtype=np.float32)
+        blend = float(np.clip(alpha, 0.0, 1.0))
+
+        if overlap_darkening:
+            fill_color = base_rgb
+            patch_alpha = blend
+        else:
+            # Avoid overlap darkening by drawing opaque pre-blended color.
+            fill_color = base_rgb * blend + (1.0 - blend)
+            patch_alpha = 1.0
+
+        if edge_style == "none":
+            edge_color = "none"
+            edge_width = 0.0
+        else:
+            edge_color = np.clip(base_rgb * 0.45, 0.0, 1.0)
+            edge_width = max(0.40, float(linewidth) * 0.70)
+
+        for i in range(0, traj.shape[0], stride):
+            x, y = traj[i]
+            yaw = float(yaws[i]) if i < yaws.shape[0] else float(yaws[-1]) if yaws.size > 0 else 0.0
+
+            c = np.cos(yaw)
+            s = np.sin(yaw)
+            rot = np.array([[c, -s], [s, c]], dtype=np.float32)
+            world_corners = local_corners @ rot.T + np.array([x, y], dtype=np.float32)
+
+            patch = Polygon(
+                world_corners,
+                closed=True,
+                facecolor=fill_color,
+                edgecolor=edge_color,
+                alpha=patch_alpha,
+                linewidth=edge_width,
+                zorder=zorder,
+            )
+            ax.add_patch(patch)
+
+    @staticmethod
+    def _vehicle_box_corners(center_xy, yaw, car_length, car_width):
+        half_l = 0.5 * float(car_length)
+        half_w = 0.5 * float(car_width)
+        local_corners = np.array(
+            [
+                [half_l, half_w],
+                [half_l, -half_w],
+                [-half_l, -half_w],
+                [-half_l, half_w],
+            ],
+            dtype=np.float32,
+        )
+        c = np.cos(float(yaw))
+        s = np.sin(float(yaw))
+        rot = np.array([[c, -s], [s, c]], dtype=np.float32)
+        center_xy = np.asarray(center_xy, dtype=np.float32).reshape(2)
+        return local_corners @ rot.T + center_xy
+
+    @staticmethod
+    def _obb_intersect(corners_a, corners_b, eps=1e-6):
+        corners_a = np.asarray(corners_a, dtype=np.float32).reshape(4, 2)
+        corners_b = np.asarray(corners_b, dtype=np.float32).reshape(4, 2)
+
+        axes = []
+        for corners in (corners_a, corners_b):
+            for i in range(4):
+                edge = corners[(i + 1) % 4] - corners[i]
+                normal = np.array([-edge[1], edge[0]], dtype=np.float32)
+                norm = np.linalg.norm(normal)
+                if norm > eps:
+                    axes.append(normal / norm)
+
+        for axis in axes:
+            proj_a = corners_a @ axis
+            proj_b = corners_b @ axis
+            if (proj_a.max() < proj_b.min() - eps) or (proj_b.max() < proj_a.min() - eps):
+                return False
+        return True
+
+    def _find_first_collision_timestep(
+        self,
+        traj_a,
+        yaws_a,
+        traj_b,
+        yaws_b,
+        car_length,
+        car_width,
+    ):
+        traj_a = np.asarray(traj_a, dtype=np.float32)
+        traj_b = np.asarray(traj_b, dtype=np.float32)
+        yaws_a = np.asarray(yaws_a, dtype=np.float32).reshape(-1)
+        yaws_b = np.asarray(yaws_b, dtype=np.float32).reshape(-1)
+
+        n = min(len(traj_a), len(traj_b), len(yaws_a), len(yaws_b))
+        if n <= 0:
+            return None
+
+        for t_idx in range(n):
+            box_a = self._vehicle_box_corners(traj_a[t_idx], yaws_a[t_idx], car_length, car_width)
+            box_b = self._vehicle_box_corners(traj_b[t_idx], yaws_b[t_idx], car_length, car_width)
+            if self._obb_intersect(box_a, box_b):
+                return t_idx
+        return None
+
+    @staticmethod
+    def _collision_mode_local_point(mode_id, car_length, car_width):
+        try:
+            mode = int(mode_id)
+        except (TypeError, ValueError):
+            return None
+
+        col = mode // 10
+        row = mode % 10
+        valid = (1 <= col <= 5) and ((row in (1, 3)) or (row == 2 and col in (1, 5)))
+        if not valid:
+            return None
+
+        # User-defined convention (vehicle forward direction basis):
+        # 11 12 13
+        # 21    23
+        # 31    33
+        # 41    43
+        # 51 52 53
+        # first digit: front(1) -> rear(5), second digit: left(1), center(2), right(3)
+        x_local = (3.0 - float(col)) * (float(car_length) / 4.0)
+        y_local = (2.0 - float(row)) * (float(car_width) / 2.0)
+        return np.array([x_local, y_local], dtype=np.float32)
+
+    def _estimate_collision_mode_from_pair(
+        self,
+        ego_center_xy,
+        ego_yaw,
+        opp_center_xy,
+        car_length,
+        car_width,
+        eps=1e-6,
+    ):
+        """
+        Estimate ego-side collision mode from ego/opponent centers at collision timestep.
+        We project the vector toward opponent center onto ego box boundary, then pick
+        the closest valid mode point among {11,12,13,21,23,31,33,41,43,51,52,53}.
+        """
+        ego_center = np.asarray(ego_center_xy, dtype=np.float32).reshape(2)
+        opp_center = np.asarray(opp_center_xy, dtype=np.float32).reshape(2)
+
+        # World -> ego local.
+        c = np.cos(float(ego_yaw))
+        s = np.sin(float(ego_yaw))
+        rot_t = np.array([[c, s], [-s, c]], dtype=np.float32)  # R^T
+        rel_local = rot_t @ (opp_center - ego_center)
+
+        dx = float(rel_local[0])
+        dy = float(rel_local[1])
+        half_l = 0.5 * float(car_length)
+        half_w = 0.5 * float(car_width)
+
+        # If almost same center, fallback to front-center candidate.
+        if (abs(dx) + abs(dy)) < eps:
+            dx, dy = 1.0, 0.0
+
+        sx = (half_l / max(abs(dx), eps)) if abs(dx) > eps else float("inf")
+        sy = (half_w / max(abs(dy), eps)) if abs(dy) > eps else float("inf")
+        scale = min(sx, sy)
+        contact_local = np.array([dx * scale, dy * scale], dtype=np.float32)
+        contact_local[0] = np.clip(contact_local[0], -half_l, half_l)
+        contact_local[1] = np.clip(contact_local[1], -half_w, half_w)
+
+        valid_modes = (11, 12, 13, 21, 23, 31, 33, 41, 43, 51, 52, 53)
+        best_mode = None
+        best_dist = None
+        for mode in valid_modes:
+            pt = self._collision_mode_local_point(mode, car_length, car_width)
+            if pt is None:
+                continue
+            d2 = float(np.sum((pt - contact_local) ** 2))
+            if (best_dist is None) or (d2 < best_dist):
+                best_dist = d2
+                best_mode = int(mode)
+
+        return best_mode
+
+    @staticmethod
+    def _mirror_collision_mode(mode_id):
+        try:
+            mode = int(mode_id)
+        except (TypeError, ValueError):
+            return None
+        col = mode // 10
+        row = mode % 10
+        mirror_col = 6 - col
+        mirror_mode = mirror_col * 10 + row
+        return mirror_mode
+
+    def _collision_mode_world_point(self, center_xy, yaw, mode_id, car_length, car_width):
+        local_pt = self._collision_mode_local_point(mode_id, car_length, car_width)
+        if local_pt is None:
+            return None
+        c = np.cos(float(yaw))
+        s = np.sin(float(yaw))
+        rot = np.array([[c, -s], [s, c]], dtype=np.float32)
+        center_xy = np.asarray(center_xy, dtype=np.float32).reshape(2)
+        return local_pt @ rot.T + center_xy
+
+    @staticmethod
+    def _collision_mode_cell_indices(mode_id):
+        try:
+            mode = int(mode_id)
+        except (TypeError, ValueError):
+            return None
+
+        col = mode // 10
+        row = mode % 10
+        valid = (1 <= col <= 5) and ((row in (1, 3)) or (row == 2 and col in (1, 5)))
+        if not valid:
+            return None
+
+        # Keep first digit front->rear, flip second digit so 1=left, 3=right.
+        return int(col - 1), int(3 - row)
+
+    def _draw_collision_mode_grid(
+        self,
+        ax,
+        center_xy,
+        yaw,
+        car_length,
+        car_width,
+        mode_id,
+        cell_color="#ff2d2d",
+        cell_alpha=0.65,
+        grid_color="black",
+        grid_alpha=0.62,
+        grid_linewidth=0.55,
+        zorder=6.1,
+    ):
+        """
+        Draw a 5x3 collision grid on the ego vehicle and highlight the selected collision-mode cell.
+        """
+        cell_idx = self._collision_mode_cell_indices(mode_id)
+        if cell_idx is None:
+            return False
+
+        col_idx, row_idx = cell_idx
+        half_l = 0.5 * float(car_length)
+        half_w = 0.5 * float(car_width)
+        dx = float(car_length) / 5.0
+        dy = float(car_width) / 3.0
+
+        center_xy = np.asarray(center_xy, dtype=np.float32).reshape(2)
+        c = np.cos(float(yaw))
+        s = np.sin(float(yaw))
+        rot = np.array([[c, -s], [s, c]], dtype=np.float32)
+
+        def to_world(local_pts):
+            return local_pts @ rot.T + center_xy
+
+        # Collision-mode cell mapping:
+        # col(first digit): 1->front ... 5->rear
+        # row(second digit): 1->left, 2->center(front/rear only), 3->right
+        x_high = half_l - float(col_idx) * dx
+        x_low = x_high - dx
+        y_low = -half_w + float(row_idx) * dy
+        y_high = y_low + dy
+
+        cell_local = np.array(
+            [
+                [x_high, y_high],
+                [x_high, y_low],
+                [x_low, y_low],
+                [x_low, y_high],
+            ],
+            dtype=np.float32,
+        )
+        cell_world = to_world(cell_local)
+        ax.add_patch(
+            Polygon(
+                cell_world,
+                closed=True,
+                facecolor=cell_color,
+                edgecolor="none",
+                alpha=float(np.clip(cell_alpha, 0.0, 1.0)),
+                zorder=zorder,
+            )
+        )
+
+        # Draw 5x3 grid lines on the oriented vehicle box.
+        for i in range(6):
+            x = -half_l + i * dx
+            seg_local = np.array([[x, -half_w], [x, half_w]], dtype=np.float32)
+            seg_world = to_world(seg_local)
+            ax.plot(
+                seg_world[:, 0],
+                seg_world[:, 1],
+                color=grid_color,
+                alpha=grid_alpha,
+                linewidth=grid_linewidth,
+                zorder=zorder + 0.05,
+            )
+
+        for j in range(4):
+            y = -half_w + j * dy
+            seg_local = np.array([[-half_l, y], [half_l, y]], dtype=np.float32)
+            seg_world = to_world(seg_local)
+            ax.plot(
+                seg_world[:, 0],
+                seg_world[:, 1],
+                color=grid_color,
+                alpha=grid_alpha,
+                linewidth=grid_linewidth,
+                zorder=zorder + 0.05,
+            )
+
+        return True
+
     def train(self):
+        grad_clip = float(getattr(self.config, "grad_clip", self.hyperparams.get("grad_clip", 1.0)))
+
         for epoch in range(1, self.config.epochs + 1):
             self.train_dataset.augment = self.config.augment
             for node_type, data_loader in self.train_data_loader.items():
@@ -198,8 +577,21 @@ class MID():
                 for batch in pbar:
                     self.optimizer.zero_grad()
                     train_loss = self.model.get_loss(batch, node_type)
-                    pbar.set_description(f"Epoch {epoch}, {node_type} MSE: {train_loss.item():.2f}")
+                    if not torch.isfinite(train_loss):
+                        pbar.set_description(f"Epoch {epoch}, {node_type} Loss: non-finite (skip)")
+                        self.optimizer.zero_grad(set_to_none=True)
+                        continue
+
+                    pbar.set_description(f"Epoch {epoch}, {node_type} Loss: {train_loss.item():.2f}")
                     train_loss.backward()
+
+                    if grad_clip > 0:
+                        grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip)
+                        if not torch.isfinite(grad_norm):
+                            pbar.set_description(f"Epoch {epoch}, {node_type} grad-norm non-finite (skip)")
+                            self.optimizer.zero_grad(set_to_none=True)
+                            continue
+
                     self.optimizer.step()
 
             self.scheduler.step()
@@ -306,6 +698,21 @@ class MID():
 
         num_samples = getattr(self.config, "viz_num_samples", 50)
         sampling = getattr(self.config, "sampling", "ddpm")
+        car_width = float(getattr(self.config, "car_width", 1.825))
+        car_length = float(getattr(self.config, "car_length", 4.650))
+        draw_vehicle_boxes = bool(getattr(self.config, "viz_vehicle_boxes_enabled", True))
+        box_stride = max(1, int(getattr(self.config, "viz_vehicle_box_stride", 1)))
+        viz_collision_mode_guidance = bool(getattr(self.config, "viz_collision_mode_guidance_enabled", False))
+        viz_collision_mode_guidance_apply_to_ego = bool(
+            getattr(self.config, "viz_collision_mode_guidance_apply_to_ego", False)
+        )
+        viz_collision_mode_id = int(
+            getattr(
+                self.config,
+                "viz_collision_mode_guidance_mode",
+                getattr(self.config, "collision_mode_guidance_mode", 11),
+            )
+        )
 
         ph = self.ph
         min_hl = self.min_hl
@@ -373,6 +780,25 @@ class MID():
 
             fig, ax = plt.subplots(figsize=(10, 10))
             all_points_for_scale = []
+            node_viz_data = []
+            ego_guidance_state = None
+            if viz_collision_mode_guidance and (ego_node is not None):
+                ego_hist = ego_node.get(np.array([t - max_hl, t]), {'position': ['x', 'y']})
+                ego_hist = ego_hist[~np.isnan(ego_hist).any(axis=1)]
+                if len(ego_hist) >= 1:
+                    ego_hist_yaw = self._compute_yaw_from_positions(ego_hist)
+                    ego_yaw_now = float(ego_hist_yaw[-1]) if len(ego_hist_yaw) > 0 else 0.0
+                    if len(ego_hist) >= 2:
+                        dt_scene_default = float(self.config.data_dt)
+                        dt_scene = max(float(getattr(scene, "dt", dt_scene_default)), 1e-6)
+                        ego_vel_now = (ego_hist[-1] - ego_hist[-2]) / dt_scene
+                    else:
+                        ego_vel_now = np.zeros((2,), dtype=np.float32)
+                    ego_guidance_state = {
+                        "pos": np.asarray(ego_hist[-1], dtype=np.float32),
+                        "yaw": float(ego_yaw_now),
+                        "vel": np.asarray(ego_vel_now, dtype=np.float32),
+                    }
 
             for node_idx, node in enumerate(nodes_at_t):
                 colors = self._get_vehicle_color_set(node_idx)
@@ -413,28 +839,70 @@ class MID():
                 )
                 batch = collate([item])
 
+                guidance_override = None
+                if viz_collision_mode_guidance and (ego_guidance_state is not None):
+                    if (node is not ego_node) or viz_collision_mode_guidance_apply_to_ego:
+                        guidance_override = {
+                            "enabled": True,
+                            "collision_mode_enabled": True,
+                            "collision_mode_id": viz_collision_mode_id,
+                            "collision_mode_target_position": ego_guidance_state["pos"],
+                            "collision_mode_target_yaw": ego_guidance_state["yaw"],
+                            "collision_mode_target_velocity": ego_guidance_state["vel"],
+                            "collision_mode_target_length": car_length,
+                            "collision_mode_target_width": car_width,
+                        }
+
                 with torch.no_grad():
-                    predictions = self.model.generate(
+                    pred_pack = self.model.generate(
                         batch,
                         node.type,
                         num_points=ph,
                         sample=num_samples,
                         bestof=True,
                         sampling=sampling,
-                        step=1
+                        step=1,
+                        return_dynamics=True,
+                        guidance_override=guidance_override,
                     )
-                    predictions = predictions[:, 0]
 
-                for pred in predictions:
+                    if isinstance(pred_pack, dict):
+                        predictions = pred_pack["position"][:, 0]    # [S, T, 2]
+                        pred_yaws = pred_pack["yaw"][:, 0]           # [S, T]
+                    else:
+                        predictions = pred_pack[:, 0]                # fallback for legacy behavior
+                        pred_yaws = None
+
+                history_yaw = self._compute_yaw_from_positions(history)
+                history_last_yaw = float(history_yaw[-1]) if len(history_yaw) > 0 else 0.0
+
+                pred_items = []
+                for pred_idx, pred in enumerate(predictions):
                     pred_traj = np.vstack((history[-1:], pred))
+                    if pred_yaws is not None:
+                        pred_yaw_full = np.concatenate(
+                            [np.array([history_last_yaw], dtype=np.float32), pred_yaws[pred_idx]],
+                            axis=0,
+                        )
+                    else:
+                        pred_yaw_full = self._compute_yaw_from_positions(pred_traj, default_yaw=history_last_yaw)
+                    pred_items.append((pred_traj, pred_yaw_full))
+
+                # Swap GT/Prediction intensity roles for path rendering.
+                pred_draw_color = colors["gt"]
+                gt_draw_color = colors["pred"]
+                shared_path_lw = 1.55
+
+                for pred_traj, _ in pred_items:
                     ax.plot(
                         pred_traj[:, 0],
                         pred_traj[:, 1],
-                        '-',
-                        color=colors["pred"],
-                        alpha=1,
-                        linewidth=1.5
-                        # markersize=3
+                        '-o',
+                        color=pred_draw_color,
+                        alpha=0.96,
+                        linewidth=shared_path_lw,
+                        markersize=2.0,
+                        zorder=3,
                     )
 
                 ax.plot(
@@ -442,19 +910,28 @@ class MID():
                     history[:, 1],
                     '-o',
                     color=colors["hist"],
-                    linewidth=2.2,
-                    markersize=3
+                    linewidth=3.2,
+                    markersize=3,
+                    zorder=4,
                 )
 
                 gt_traj = np.vstack((history[-1:], future))
                 ax.plot(
                     gt_traj[:, 0],
                     gt_traj[:, 1],
-                    '-o',
-                    color=colors["gt"],
-                    linewidth=1.5,
-                    markersize=2,
-                    alpha=0.8
+                    '-',
+                    color=gt_draw_color,
+                    linewidth=shared_path_lw,
+                    alpha=0.94,
+                    zorder=4,
+                )
+
+                node_viz_data.append(
+                    {
+                        "node": node,
+                        "colors": colors,
+                        "pred_items": pred_items,
+                    }
                 )
 
                 ax.scatter(
@@ -482,6 +959,143 @@ class MID():
                 all_points_for_scale.extend(future)
                 all_points_for_scale.extend(predictions.reshape(-1, 2))
 
+            if draw_vehicle_boxes and len(node_viz_data) > 0:
+                representative = []
+                for rec in node_viz_data:
+                    pred_items = rec.get("pred_items", [])
+                    if len(pred_items) == 0:
+                        continue
+                    rep_traj, rep_yaw = pred_items[0]
+                    representative.append(
+                        {
+                            "node": rec["node"],
+                            "colors": rec["colors"],
+                            "traj": np.asarray(rep_traj, dtype=np.float32),
+                            "yaw": np.asarray(rep_yaw, dtype=np.float32),
+                        }
+                    )
+
+                if len(representative) > 0:
+                    # Enforce exactly one box timestep per vehicle to avoid mixed-time rendering.
+                    draw_t_by_idx = [None] * len(representative)
+                    collision_event = None
+
+                    ego_idx = None
+                    for i, rec in enumerate(representative):
+                        if rec["node"] is ego_node:
+                            ego_idx = i
+                            break
+                    if ego_idx is None:
+                        ego_idx = 0
+
+                    if len(representative) == 1:
+                        draw_t_by_idx[0] = int(max(0, len(representative[0]["traj"]) - 1))
+                    else:
+                        ego_rec = representative[ego_idx]
+                        pair_stats = []
+                        for i, rec in enumerate(representative):
+                            if i == ego_idx:
+                                continue
+                            min_len = min(len(ego_rec["traj"]), len(ego_rec["yaw"]), len(rec["traj"]), len(rec["yaw"]))
+                            if min_len <= 0:
+                                continue
+                            t_collision = self._find_first_collision_timestep(
+                                ego_rec["traj"][:min_len],
+                                ego_rec["yaw"][:min_len],
+                                rec["traj"][:min_len],
+                                rec["yaw"][:min_len],
+                                car_length,
+                                car_width,
+                            )
+                            pair_stats.append(
+                                {
+                                    "opp_idx": i,
+                                    "t_collision": None if t_collision is None else int(t_collision),
+                                    "t_last": int(min_len - 1),
+                                }
+                            )
+
+                        collided_pairs = [p for p in pair_stats if p["t_collision"] is not None]
+                        if len(collided_pairs) > 0:
+                            # Use one global collision timestep (earliest) so ego/track are aligned in time.
+                            first_collision = min(collided_pairs, key=lambda p: p["t_collision"])
+                            collision_event = (first_collision["opp_idx"], first_collision["t_collision"])
+                            t_collision = int(first_collision["t_collision"])
+                            draw_t_by_idx[ego_idx] = t_collision
+                            draw_t_by_idx[first_collision["opp_idx"]] = t_collision
+
+                            # Non-colliding tracks: draw at each track's last available timestep.
+                            for p in pair_stats:
+                                opp_idx = int(p["opp_idx"])
+                                if draw_t_by_idx[opp_idx] is None:
+                                    draw_t_by_idx[opp_idx] = int(p["t_last"])
+                        else:
+                            # No collision in scene: draw all boxes at the last timestep.
+                            for i, rec in enumerate(representative):
+                                draw_t_by_idx[i] = int(max(0, min(len(rec["traj"]), len(rec["yaw"])) - 1))
+
+                    # Fallback for any unresolved index.
+                    for i, rec in enumerate(representative):
+                        if draw_t_by_idx[i] is None:
+                            draw_t_by_idx[i] = int(max(0, min(len(rec["traj"]), len(rec["yaw"])) - 1))
+
+                    # Draw only selected timestep boxes (collision timestep or last timestep).
+                    for i, rec in enumerate(representative):
+                        max_idx = int(max(0, min(len(rec["traj"]), len(rec["yaw"])) - 1))
+                        t_box = int(np.clip(draw_t_by_idx[i], 0, max_idx))
+                        self._draw_vehicle_rectangles(
+                            ax=ax,
+                            traj=rec["traj"][t_box:t_box + 1],
+                            yaws=rec["yaw"][t_box:t_box + 1],
+                            car_length=car_length,
+                            car_width=car_width,
+                            color=rec["colors"]["pred"],
+                            alpha=0.28,
+                            linewidth=1.1,
+                            zorder=2.2,
+                            stride=1,
+                            edge_style="dark",
+                            overlap_darkening=False,
+                        )
+
+                    # Draw ego collision-mode grid highlight when collision is detected.
+                    if collision_event is not None:
+                        opp_idx, t_draw = collision_event
+                        ego_rec = representative[ego_idx]
+                        opp_rec = representative[opp_idx]
+                        t_e = int(np.clip(t_draw, 0, min(len(ego_rec["traj"]), len(ego_rec["yaw"])) - 1))
+                        t_o = int(np.clip(t_draw, 0, min(len(opp_rec["traj"]), len(opp_rec["yaw"])) - 1))
+                        inferred_mode = self._estimate_collision_mode_from_pair(
+                            ego_center_xy=ego_rec["traj"][t_e],
+                            ego_yaw=ego_rec["yaw"][t_e],
+                            opp_center_xy=opp_rec["traj"][t_o],
+                            car_length=car_length,
+                            car_width=car_width,
+                        )
+                        mode_to_draw = int(inferred_mode) if inferred_mode is not None else int(viz_collision_mode_id)
+                        _ = self._draw_collision_mode_grid(
+                            ax=ax,
+                            center_xy=ego_rec["traj"][t_e],
+                            yaw=ego_rec["yaw"][t_e],
+                            car_length=car_length,
+                            car_width=car_width,
+                            mode_id=mode_to_draw,
+                            cell_color="#ff2d2d",
+                            cell_alpha=0.66,
+                            grid_color="black",
+                            grid_alpha=0.62,
+                            grid_linewidth=0.55,
+                            zorder=6.1,
+                        )
+
+                        ego_label = role_labels.get(ego_rec["node"], f"ID {ego_rec['node'].id}")
+                        opp_label = role_labels.get(opp_rec["node"], f"ID {opp_rec['node'].id}")
+                        print(
+                            f"    [collision-box] {ego_label} & {opp_label} "
+                            f"at pred_idx={int(t_draw)} (scene_t={int(t + t_draw)}), "
+                            f"requested_mode={int(viz_collision_mode_id)}, inferred_mode={int(mode_to_draw)}"
+                        )
+
             if len(all_points_for_scale) == 0:
                 plt.close(fig)
                 continue
@@ -501,9 +1115,9 @@ class MID():
             ax.grid(alpha=0.3)
 
             import matplotlib.lines as mlines
-            hist_line = mlines.Line2D([], [], color='black', marker='o', markersize=4, label='History')
-            gt_line = mlines.Line2D([], [], color='dimgray', marker='o', markersize=4, label='GT Future')
-            pred_line = mlines.Line2D([], [], color='lightgray', marker='o', markersize=3, label='Predictions')
+            hist_line = mlines.Line2D([], [], color='black', linestyle='-', marker='o', markersize=4, linewidth=3.2, label='History')
+            gt_line = mlines.Line2D([], [], color='dimgray', linestyle='-', linewidth=1.55, label='GT Future (solid)')
+            pred_line = mlines.Line2D([], [], color='slategray', linestyle='-', marker='o', markersize=2.8, linewidth=1.55, label='Predictions (-o)')
             curr_point = mlines.Line2D([], [], color='white', marker='o', markerfacecolor='black', markersize=8, label='Current Pos')
             ax.legend(handles=[hist_line, gt_line, pred_line, curr_point], loc='best')
 
@@ -658,7 +1272,7 @@ class MID():
         print("> Optimizer built!")
 
     def _build_encoder_config(self):
-        self.hyperparams = get_traj_hypers()
+        self.hyperparams = get_traj_hypers(self.config)
         self.hyperparams['enc_rnn_dim_edge'] = self.config.encoder_dim // 2
         self.hyperparams['enc_rnn_dim_edge_influence'] = self.config.encoder_dim // 2
         self.hyperparams['enc_rnn_dim_history'] = self.config.encoder_dim // 2

@@ -26,6 +26,8 @@ python mat_preprocess/mat2txt.py --in-root mat_preprocess/mat --pass-list mat_pr
 --pass-list : 참고할 pass_list의 위치
 --out-dir : 아웃풋 경로
 
+++ sampling time은 mat.yaml에서 지정
+
 ## 3. almoost_collision.py ## =============================================================================================
 
 [충돌 상황에 가까운 장면만 자르는 코드] 
@@ -41,3 +43,9 @@ python mat_preprocess/split_data.py --train 8 --val 1 --test 1 --suffix collisio
 --train val test 비율.
 --suffix : train_~ 에서 ~를 정할 수 있음.
 --use_ratio : 전체 데이터셋 중에서 몇퍼센트를 사용할지.
+
+## Timebase (Single Source)
+- Set data_dt in configs/mat.yaml.
+- If mat2txt.py runs without --target-dt, it uses data_dt.
+- lmost_collision.py, process_data_mat.py, and getparam.py also use data_dt by default.
+

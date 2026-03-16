@@ -96,7 +96,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_ratio', type=float, default=1.0, help='사용할 전체 데이터의 비율 (예: 0.1 -> 10%%만 사용)')
     parser.add_argument('--seed', type=int, default=42, help='랜덤 셔플 시드 (실험 재현용)')
     # 새로운 파라미터 추가
-    parser.add_argument('--source', type=str, default='collision_extract', help='분할할 원본 데이터가 있는 폴더명 (기본값: all)')
+    parser.add_argument('--source', type=str, default='collision_extract_002', help='분할할 원본 데이터가 있는 폴더명 (기본값: all)')
 
     args = parser.parse_args()
     split_dataset(args.train, args.val, args.test, args.suffix, args.use_ratio, args.seed, args.source)

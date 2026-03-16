@@ -1,0 +1,78 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{kotex}
+\usepackage{hyperref}
+\title{Collision\_sim 수식 정리 (Diffusion + Dynamics Guidance + Bicycle Rollout)}
+\author{}
+\date{}
+\begin{document}
+\maketitle
+
+\section*{1. Diffusion 학습}
+\[
+x_t=\sqrt{\bar{\alpha}_t}x_0+\sqrt{1-\bar{\alpha}_t}\epsilon,\qquad \epsilon\sim\mathcal{N}(0,I)
+\]
+\[
+\mathcal{L}_{\mathrm{diff}}=\left\|\epsilon_\theta(x_t,t,c)-\epsilon\right\|_2^2
+\]
+\[
+\hat{x}_0=\frac{x_t-\sqrt{1-\bar{\alpha}_t}\epsilon_\theta(x_t,t,c)}{\sqrt{\bar{\alpha}_t}}
+\]
+
+\section*{2. Yaw 보조 Loss}
+\[
+\hat{v}=\hat{x}_0\odot\sigma_v,\qquad v^{gt}=y_{st}\odot\sigma_v
+\]
+\[
+\hat{d}=\frac{\hat{v}}{\max(\|\hat{v}\|,v_{\min}+\varepsilon)},\quad
+d^{gt}=\frac{v^{gt}}{\max(\|v^{gt}\|,v_{\min}+\varepsilon)}
+\]
+\[
+\mathcal{L}_{\mathrm{yaw}}
+=\frac{1}{|M|}\sum_{(b,\tau)\in M}\left(1-\hat{d}_{b,\tau}^{\top}d_{b,\tau}^{gt}\right),
+\quad
+M=\{(b,\tau)\mid \|\hat{v}_{b,\tau}\|>v_{\min}\land \|v^{gt}_{b,\tau}\|>v_{\min}\}
+\]
+\[
+\mathcal{L}_{\mathrm{total}}=\mathcal{L}_{\mathrm{diff}}+\lambda_{\mathrm{yaw}}\mathcal{L}_{\mathrm{yaw}}
+\]
+
+\section*{3. Dynamics Guidance (샘플링 중)}
+\[
+x_{t-1}=\frac{1}{\sqrt{\alpha_t}}\left(x_t-\frac{1-\alpha_t}{\sqrt{1-\bar{\alpha}_t}}\epsilon_\theta(x_t,t,c)\right)+\sigma_t z
+\]
+\[
+x_{t-1}\leftarrow x_{t-1}-\lambda_g\nabla_x G(x_{t-1})
+\]
+\[
+G=\sum_i w_i P_i
+\]
+\[
+P_{\mathrm{acc}}=\mathrm{mean}\left[\max(0,\|a\|-a_{\max})^2\right],\quad
+P_{\mathrm{jerk}}=\mathrm{mean}\left[\max(0,\|j\|-j_{\max})^2\right]
+\]
+\[
+\dot{\psi}=\frac{|\mathrm{wrap}(\psi_{k+1}-\psi_k)|}{\Delta t},\quad
+\kappa=\frac{\dot{\psi}}{\bar{v}}
+\]
+\[
+P_{\mathrm{yaw}}=\mathrm{mean}\left[\max(0,\dot{\psi}-\dot{\psi}_{\max}^{\mathrm{lim}})^2\right],\quad
+P_{\kappa}=\mathrm{mean}\left[\max(0,\kappa-\kappa_{\max})^2\right]
+\]
+
+\section*{4. Bicycle 기반 제한}
+\[
+\kappa_{\mathrm{bike}}=\frac{\tan(\delta_{\max})}{L}
+\]
+\[
+\dot{\psi}_{\max}^{\mathrm{lim}}(v)=\min\left(\dot{\psi}_{\max},v\kappa_{\mathrm{bike}}\right)
+\]
+\[
+\Delta\psi\leftarrow\mathrm{clip}\left(\Delta\psi,-\dot{\psi}_{\max}^{\mathrm{lim}}\Delta t,\dot{\psi}_{\max}^{\mathrm{lim}}\Delta t\right)
+\]
+\[
+v_x=s\cos\psi,\quad v_y=s\sin\psi,\quad p_{k+1}=p_k+v_k\Delta t
+\]
+
+\end{document}

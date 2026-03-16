@@ -1,30 +1,103 @@
 ############ MID Config #############
-# CN7: EGO_VEHICLE.WIDTH=1.825, LENGTH=4.650
+car_width: 1.825
+car_length: 4.650
+# mat data sampling time
+data_dt: 0.02
+# optional second-based horizon config (converted to steps by data_dt)
+history_sec: 0.7
+prediction_sec: 1.3
 
-# added config
+# Training 
 save_pt_every: 1
 viz_enabled: True
-viz_num_examples: 1
-viz_num_samples: 7
-# optimizer
+viz_num_examples: 30
+viz_num_samples: 1
+viz_vehicle_boxes_enabled: True
+viz_collision_mode_guidance_enabled: False
+viz_collision_mode_guidance_mode: 11
+viz_collision_mode_guidance_apply_to_ego: False
+
+# training params
 lr: 0.001
-# dataset
+grad_clip: 1.0
 data_dir: processed_data
-# Training Prarmeters:
 diffnet: TransformerConcatLinear #TransformerConcatLinear
 encoder_dim: 256
 tf_layer: 3
-epochs: 200
+epochs: 500
 batch_size: 256
 eval_batch_size: 256
 k_eval: 25
 seed: 123
-eval_every: 200
+eval_every: 1001
 # Testing
 eval_at: 100
 eval_mode: False
 # set to "ddim" to enable fast sampling
 sampling: ddpm
+
+# dynamics guidance during denoising (x_{t-1} <- x_{t-1} - lambda * grad G)
+dynamics_guidance_enabled: True
+dynamics_guidance_scale: 0.03
+dynamics_guidance_start_ratio: 0.0
+dynamics_guidance_inner_steps: 1
+dynamics_guidance_max_grad_norm: 1.5
+dynamics_guidance_eps: 1.0e-6
+dynamics_guidance_min_speed: 0.0
+dynamics_guidance_max_accel: 6.0
+dynamics_guidance_max_jerk: 8.0
+dynamics_guidance_max_yaw_rate: 0.6
+dynamics_guidance_max_curvature: 0.25
+dynamics_guidance_max_lateral_accel: 4.5
+dynamics_guidance_max_slip_ratio: 3.0
+dynamics_guidance_reverse_tolerance: 0.25
+dynamics_guidance_weight_accel: 1.0
+dynamics_guidance_weight_jerk: 0.6
+dynamics_guidance_weight_yaw_rate: 0.8
+dynamics_guidance_weight_curvature: 1.0
+dynamics_guidance_weight_lateral_accel: 0.9
+dynamics_guidance_weight_slip: 0.4
+dynamics_guidance_weight_reverse: 0.5
+
+dynamics_guidance_use_bicycle_curvature: True
+dynamics_guidance_wheelbase: 2.70
+dynamics_guidance_max_steer_deg: 32.0
+dynamics_guidance_low_speed_yaw_weight: 0.6
+dynamics_guidance_low_speed_yaw_threshold: 0.3
+
+# collision-mode guidance (11~53, IEEE Access Fig.2)
+# valid modes: 11,12,13,21,23,31,33,41,43,51,52,53
+collision_mode_guidance_enabled: False
+collision_mode_guidance_mode: 11
+collision_mode_guidance_weight: 1.2
+collision_mode_guidance_sigma: 1.5
+collision_mode_guidance_use_softmin: True
+collision_mode_guidance_softmin_temperature: 1.0
+collision_mode_guidance_time_index: -1
+collision_mode_guidance_weight_approach: 0.0
+collision_mode_guidance_approach_cos: 0.0
+collision_mode_guidance_weight_closing: 0.0
+collision_mode_guidance_min_closing_speed: 0.5
+# target ego pose/velocity for impact-area guidance
+collision_mode_guidance_target_x: 0.0
+collision_mode_guidance_target_y: 0.0
+collision_mode_guidance_target_yaw_deg: 0.0
+collision_mode_guidance_target_speed_x: 0.0
+collision_mode_guidance_target_speed_y: 0.0
+collision_mode_guidance_target_length: 4.650
+collision_mode_guidance_target_width: 1.825
+
+# yaw auxiliary supervision during training
+yaw_loss_enabled: True
+yaw_loss_weight: 0.1
+yaw_loss_min_speed: 0.5
+yaw_loss_speed_eps: 1.0e-6
+
+# bicycle-based rollout projection for generated trajectories
+bicycle_rollout_enabled: True
+bicycle_rollout_wheelbase: 2.70
+bicycle_rollout_max_steer_deg: 32.0
+bicycle_rollout_low_speed_threshold: 0.3
 ############### Trajectron++ Config #################
 # misc
 conf: None

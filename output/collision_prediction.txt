@@ -1,0 +1,796 @@
+           Received 11 March 2024, accepted 7 April 2024, date of publication 12 April 2024, date of current version 23 April 2024.
+           Digital Object Identifier 10.1109/ACCESS.2024.3388099
+           Collision Prediction in an Integrated Framework
+           of Scenario-Based and Data-Driven Approaches
+                                  1                          1                            2
+           SUNGWOOLEE ,BONGSOBSONG ,ANDJANGHOSHIN
+           1Department of Mechanical Engineering, Ajou University, Suwon 16499, South Korea
+           2R&DDivision,HyundaiMotorCompany,Hwaseong18280,SouthKorea
+           Corresponding author: Bongsob Song (bsong@ajou.ac.kr)
+           This work was supported in part by the Korea Agency for Infrastructure Technology Advancement (KAIA) grant by the Ministry of Land,
+           Infrastructure and Transport under Grant 22AMDP-C162184-02, and in part by Hyundai Motor Company.
+             ABSTRACT A collision prediction framework integrating scenario-based approach with data-driven
+             approach is proposed to enhance the safety of autonomous driving vehicles as well as advanced driver
+             assistance systems. No matter how the autonomous driving is intelligent, it is inevitable to consider
+             malfunction or faults of sensors, actuators, and processors, thus resulting in the collision. To address these
+             issues, several studies have been proposed to improve performance based on model-based or data-driven
+             approaches. However, there are several challenges in terms of the scarcity of accident data and the lack of
+             explainability of deep neural networks. To overcome the limits of both approaches, an integrated framework
+             that includes trajectory prediction, threat assessment, and decision-making based on convolutional neural
+             network (CNN) for collision prediction is introduced. For more detail, both trajectory prediction based on
+             Kalman filter and probabilistic threat metric are added in the form of a simplified bird’s eye view (SBEV),
+             which is the input to the network. In the development of the proposed algorithm, pre-crash simulation
+             data and experimental data have been employed. A comparative study shows that the proposed algorithm
+             outperformsthemodel-basedalgorithmonsimulationdatacontainingsafety-criticalscenarios.Furthermore,
+             it outperforms the data-driven algorithm on experimental data.
+             INDEXTERMS Collisionprediction, deep learning, risk assessment, scenario-based assessment.
+           I. INTRODUCTION                                                             components: pre-crash, impact, and injury scenarios [5].
+           Active safety systems, with the potential to prevent or                     Before the impact, autonomous vehicle (AV) endeavors
+           mitigate crashes, have contributed to an enhanced level of                  to avoid collisions through the utilization of active safety
+           safety to some extent [1]. However, even highly automated                   systems, including automatic emergency braking (AEB)
+           vehicles are incapable of preventing accidents in situations                and automatic emergency steering (AES), within the crash
+           marked by system failures or malfunctions. In May 2016,                     scenario [6]. Nevertheless, in situations where collision
+           a vehicle equipped with Tesla’s autonomous driving system                   avoidance is no longer feasible, passive safety mechanisms
+           was unable to avert a collision with a truck trailer due to a               such as airbags and seatbelt pretensioners must be deployed
+           failure in object detection [2]. In March 2018, Uber’s self                 to mitigate injuries. The prediction of collisions is imperative
+           driving vehicle could not avoid pedestrian accident due to                  for the deployment of both active and passive safety systems.
+           object misclassification in Arizona [3]. In October 2023,                      Collision prediction studies primarily fall into two distinct
+           a collision involving Cruise’s robotaxi occurred, leading to                categories: the model-based approach and the data-driven
+           the issuance of a recall for the robotaxi [4]. The National                 approach. In model-based approach, the activation of active
+           Highway Traffic Safety Administration (NHTSA) has out-                      or passive safety systems is based on threat metrics. Model-
+           lined a crash scenario structure consisting of three primary                based methods can be categorized into several groups, which
+                                                                                       include single-behavior threat metrics and probabilistic
+              The associate editor coordinating the review of this manuscript and      approaches [7]. Single-behavior threat metrics assumes
+           approving it for publication was Mohammad S. Khan   .                       perfect measurements and relies on deterministic motion
+                                    
+2024TheAuthors. This work is licensed under a Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 License.
+           55234                                     For more information, see https://creativecommons.org/licenses/by-nc-nd/4.0/              VOLUME12,2024
+          S. Lee et al.: Collision Prediction in an Integrated Framework
+          prediction utilizing simplified model [8], [9], [10], [11].             The majority of current driving systems are designed and
+          Some researchers have devised a collision index that exam-           assessed using real-world dataset. However, occurrences of
+          ines all physically possible trajectories of the ego vehicle and     safety-critical scenarios within the dataset are infrequent.
+          surrounding objects. If the algorithm identifies a trajectory        Consequently,intherealmofsafetyassessment,recentfocus
+          combinationthatwouldavoidacollision,thenitrefrainsfrom               has been directed towards the exploration of scenario-based
+          triggering a collision detection [12]. Another single-behavior       evaluation techniques and methods for generating scenarios
+          threat metrics, a predictive occupancy map (POM) was                 that include safety-critical situations. In previous research,
+          introduced to discern risks associated with multi-vehicle            a scenario generation framework involving two main pro-
+          scenarios. Collision detection operates on the basis of the          cesses was introduced: scenario generation and scenario
+          POM.Whenthecollisionriskassociatedwiththeegovehicle,                 selection. During the scenario generation phase, functional,
+          represented by the risk value at the center of the ego vehicle       logical, or even explicitly concrete scenarios are crafted
+          within the POM, surpasses a pre-determined threshold, the            based on various sources of information such as expert
+          collision is predicted [13]. In contrast to single-behavior          knowledge, real-world driving data, and accident data.
+          threat metrics, probabilistic approaches provide the advan-          In scenario selection, scenarios are chosen by sampling
+          tage of considering uncertainties in state estimation during         from parameter ranges or distributions. For evaluation, two
+          decision-making processes. The calculation of collision              approaches are considered: testing-based and falsification
+          probability involves summing the probabilities of stochastic         based approaches. In the testing-based approach, safety
+          reachable sets or state regions corresponding to a potential         function is evalutated based on scenarios covering parameter
+          collision [14], [15], [16]. Several automotive manufacturers         ranges specified by minimum and maximum values. In the
+          have successfully deployed and introduced model-based                falsification-based method, there are several options to
+          algorithms to the market, specifically in the form of adaptive       discovercounterexamplesthatviolatethesafetyrequirement,
+          cruise control (ACC) and forward collision warning (FCW)             such as utilizing accident database, increasing the criticality
+          systems.However,inmostmodel-basedmethods,itbecomes                   and complexity of scenarios [23].
+          necessary to establish one or more thresholds to activate               Several studies have explored the enhancement of the
+          safety systems. This particular aspect can present a challenge       performanceofpassivesafetysystemsthroughtheutilization
+          in adapting to diverse driving scenarios, as the thresholds are      of pre-crash information, extending beyond mere collision
+          frequently calibrated through heuristic methods or calculated        prediction. Based on the identification of crash types, the
+          using fixed formulas.                                                activation of reversible restrains or airbags is determined
+             In the data-driven approach, multilayer perceptron neural         accordingly.Theassuranceofreliablediscriminationofcrash
+          network(MLP)wasintroducedforrear-endcollisionwarning                 types enhances the robustness and performance of passive
+          algorithm (MCWA) [17]. For the same purpose, a CNN was               safety systems [24], [25].
+          developed, with the input image was generated based on                  Bothmodel-basedanddata-drivenalgorithmsforcollision
+          the gramian angular summation field (GASF) matrix. This              prediction possess limitations respectively, thus highlighting
+          CNN-basedalgorithmisdenotedastherear-endcollisionpre-                the necessity for an integrated framework to enhance
+          diction mechanism (RCPM) [18]. Nevertheless, the majority            performance. Moreover, a review of previous studies on
+          of studies within this approach detect collisions using infor-       collision prediction indicates a lack of focus on all-around
+          mation derived from the primary vehicle in a lane-following          collision prediction, primarily due to the utilization of limited
+          scenario. Consequently, this approach may be limited, as it          scenarios. In this study, we introduce a data-driven algorithm
+          fails to capture the interrelationships among objects in a           aimed at predicting all-around collisions and identifying
+          traffic scene [19]. To capture interrelationship, a simplified       impact sections. To mitigate unexpected outcomes from
+          bird’s eye view input representation was introduced. It can be       neural networks, we incorporate model-based threat metrics
+          generated from diverse sensor setups and dataset, which can          into an SBEV format. These metrics, which have proven
+          enhance model’s adaptability to new sensor configurations            effective in commercial applications, especially in collision
+          that frequently arise due to the competitive nature of the           detection, are anticipated to offer supplementary information
+          market [20]. In collision detection, data-driven approaches          beneficial for classifying critical situations. The proposed
+          havedemonstratedsuperiorperformancecomparedtomodel-                  algorithm is developed using a range of pre-crash scenarios
+          based algorithms [17], [18], [21]. However, a data-driven            involving safety-critical situations, derived from accident
+          approach may produce unexpected outcomes when faced                  data statistics. Additionally, real-world data is employed to
+          with extremely rare or unknown driving scenarios that were           enhance robustness against false alarms, given its higher
+          notpresentinthetrainingdataset[22].Moreover,data-driven              complexity compared to simulated data. In previous studies
+          models necessitate safety-critical scenarios and extensive           related to the integrated safety systems, pre-crash informa-
+          dataset for network training. However, a notable scarcity            tion, including front or side impact area were utilized to
+          of open dataset suitable for the development of collision            enhance the performance of safety systems. The all-around
+          prediction algorithms exists.                                        collision prediction with a more detailed segmentation of the
+          VOLUME12,2024                                                                                                                   55235
+                                                                                                            S. Lee et al.: Collision Prediction in an Integrated Framework
+            impact section has the potential to design more sophisticated
+            active or passive safety systems.
+               Themaincontributionsofthisstudycanbesummarizedas
+            follows:
+               • In comparison to both model-based and data-driven
+                  algorithms, our collision mode prediction algorithm
+                  (CMPA),whichutilizesSBEVinputbasedontrajectory                           FIGURE 2. Definition of collision mode.
+                  prediction and threat metric, demonstrates improved                      In this paper, we propose a CNN-based collision mode pre-
+                  performance in predicting collisions from all directions                 diction algorithm that integrates a data-driven methodology
+                  for both simulation and experimental data.                               with a model-based trajectory prediction and threat metric.
+               • The proposed CMPA is designed not only to determine
+                  the occurrence of an all-around collision but also                        III. COLLISION MODE PREDICTION
+                  to identify a more detailed impact section when the                      The architecture of the proposed collision mode predictor
+                  accident occurs.                                                         is shown in Fig. 3. Sensor fusion is employed to integrate
+            II. PROBLEM STATEMENT                                                          measurements from the front vision, front radar, and corner
+            Thecollisionpredictionalgorithmmustpossesstwoessential                         radar sensors. This integration process yields information
+            properties. Firstly, it should be capable of detecting all                     about the states of surrounding objects with respect to the
+            collisions. Secondly, it should minimize the occurrence of                     egovehiclewithintheexperimentaldata.Forsimulationdata,
+            false alarms. The challenge inherent in collision predic-                      information about surrounding objects is directly extracted
+            tion lies in the frequent contradiction between these two                      from the simulator, with the assumption that uncertainties in
+            properties. Fig. 1 presents an overview of straight crossing                   the states of surrounding objects can be disregarded. In addi-
+            paths at junction scenario. In this scenarios, the ego vehicle                 tion, data regarding the lane is conveyed to the ‘‘Abstraction’’
+            (depicted in white) proceeds straight through an intersection                  module. This information includes the lateral distance
+            and then cuts across the path of the straight-crossing target                  from ego vehicle to the lane markers and two degree-3
+            vehicle (depicted in blue) coming from a lateral direction.                    polynomials representing each lane, both derived from the
+            As depicted in Fig. 1 (left), when the target vehicle enters                   front vision. The ‘‘Abstraction’’ module converts the current
+            the intersection, it becomes challenging to definitively                       driving situation into an image suitable for input to a CNN.
+            ascertain whether it will collide with the ego vehicle or                      In Fig. 3, the DSM image depicts a scenario where the target
+            narrowly evade contact without actual collision. From the                      vehicle cuts in from left on a curved road. The model-based
+            antecedent circumstance, the inevitability of an accident                      trajectory prediction and threat metric algorithms are tasked
+            becomes apparent. However, when the incident occurs, its                       with predicting the future states of surrounding objects and
+            impact is confined to a small area on the rear left side of                    evaluating their criticality. A simplified representation of
+            the ego vehicle, as illustrated in Fig. 1 (right). In order to                 the driving scene, referred to as the dynamic semantic map
+            enhancesafetywithinthecontextofthisillustrativescenario,                       (DSM),isconstructed utilizing information derived from the
+            it is recommended that safety system designers reduce the                      preceding model-based algorithms and observational data.
+            threshold for collision prediction, even when faced with a                     Subsequently, in the ‘‘Classification and Decision’’ module,
+            marginal likelihood of an inevitable collision. Conversely,                    a collision mode classification model utilizing CNN deduces
+            this adjustment may result in an elevated incidence of false                   the most probable collision mode for the current driving
+            alarms.                                                                        environment. It is crucial to ensure sensitivity and robustness
+               Thecollision mode, depicted in Fig. 2, denotes the precise                  in the classification process. Therefore, the determination of
+            point of impact on the ego vehicle during a collision. It is                   the collision mode is established through consideration of
+            defined as a grid aligned with the contour of the ego vehicle,                 the likelihood of collision mode incidence, as inferred by
+            where the width and length of the ego vehicle are divided                      the CNN.
+            into three and five sections, respectively. Each section is                     A. ABSTRACTION
+            designatedbyatwo-digitnumber,rangingfrom11to53[26].                            Forearlycollisiondetection,itisessentialtopredictthetarget
+                                                                                           vehicles’ behaviors. In the realm of short-term prediction
+                                                                                           within a prediction horizon of 1 to 2 s, the accuracy
+                                                                                           of trajectory prediction from model-based approaches is
+                                                                                           comparable to that achieved by data-driven methods [27].
+                                                                                           For situations where a collision is imminent, we utilize
+                                                                                           a model-based motion predictor for short-term prediction.
+                                                                                           ThetrajectorypredictionalgorithmemploysKalmanfiltering
+                                                                                           with constant acceleration (CA) model to predict the
+            FIGURE 1. The snapshots of straight crossing paths at junction scenario.       future potential position of surrounding objects, along with
+            55236                                                                                                                                     VOLUME12,2024
+           S. Lee et al.: Collision Prediction in an Integrated Framework
+                                                                                         p employed to indicate predictive. In this study, the adopted
+                                                                                         prediction time horizon spans a duration of 1 second, and the
+                                                                                         computation of prediction results occurs at intervals of 0.2 s.
+                                                                                            To enhance the collision mode prediction model for the
+                                                                                         classification of critical situations, it would be advantageous
+                                                                                         tointegratedriveabilityintothedecision-makingsystem.One
+                                                                                         of the most relevant metrics for assessing driveability in a
+                                                                                         given scene is the risk estimation [29]. The probabilistic
+                                                                                         approach to threat assessment has the capacity to take
+                                                                                         into account both modeling errors and measurement noise,
+                                                                                         enabling the decision making with a specific degree of
+                                                                                         confidence [7]. The calculation of collision probability
+                                                                                         involves the integration of the joint probability density
+                                                                                         function for both the ego vehicle and other objects across
+                                                                                         regions with potential collision. The collision probability can
+                                                                                         be calculated as follows:
+                                                                                            g (t) = max Prob(x(t +iT) ∈ D) ,              i = 1,··· ,N        (4)
+                                                                                             p          i  (                        )                     p
+                                                                                         whereDrepresentstheregionassociatedwithacollision,and
+                                                                                         N represents the duration of the pre-determined prediction
+                                                                                           p
+                                                                                         time horizon.
+                                                                                           Prob(x(t + iT) ∈ D)
+                                                                                                      =ZZZ             p      (x,y,θ|Y ) dxdydθ               (5)
+                                                                                                               x,y,θ∈D t+iT              t
+                                                                                         where Yt is the cumulative set of measurement up to time t,
+                                                                                         p       is the probability density of the vehicles’ relative
+           FIGURE 3. Architecture of collision mode prediction model.                      t+iT
+                                                                                         position obtained from the Bayesian solution to the tracking
+           estimating the error covariance [28]. In predicting the future                problem [16].
+           states of objects, the accessible information encompasses the                    The dynamic semantic map (DSM) serves as a mean
+           objects’ current motion estimates derived from the sensor                     to convert information including driving data, trajectory
+           fusion algorithm. The state vector of target n are defined as                 prediction, and threat metric into a SBEV. This particular
+           follows:                                                                      representation offers the capacity to account for interactions
+                                                                                         among vehicles and exhibits flexibility in accommodating
+                                                         T       6                       varying levels of complexity within its representation [20].
+                             x =[x,y,v ,v ,θ,a ] ∈ R                            (1)
+                              n             x   y      x                                 Furthermore,theSBEVrepresentationpossessesthevaluable
+           wherethesubscriptncorrespondstothen-thtarget,x denotes                        attribute of being independent from variations in dataset,
+           the relative longitudinal position, y is the relative lateral                 such as simulation and experimental data. This quality
+           position,θ indicatestherelativeheadingangle,vx denotesthe                     proves advantageous when employing it to train a CNN with
+           longitudinalvelocity,vy representsthelateralvelocity,andax                    different data sources. DSM is created by incorporating the
+           is the longitudinal acceleration.                                             current state, threat metrics, and future state at time step k
+              The future states of the object can be described as a                      for all actors. In a given time frame, the DSM takes the form
+           stochastic multistage process. Subsequently, the maximum                      of an RGB image with dimensions h × w × 3. The size
+           likelihood prediction of the future state is computed using the               of the DSM has been determined to cover the 40m × 20m
+           Kalmanfiltering equations, i.e.,                                              physical region. This region is specifically situated with 30m
+                   ˆ                 ˆ                                                   extending forward from the ego vehicle and 10m spanning
+                   x (k +1) = f(x (k)) + q(k),           k = 1,...,N
+                     n                n                                  p               to both its left and right sides. A crucial parameter to note
+                                          where      q(k) ∼ N(0,Q(k))           (2)      is the pixel resolution, which we have configured at 0.2m.
+                ˆ                ˆ                                                       This choice has been made to strike a balance between the
+                y (k +1) =h(x (k))+r(k),             k = 1,...,N
+                 n                 n                                 p
+                                          where      r(k) ∼ N(0,R(k))           (3)      size of the image and its capability to accurately depict
+                                                                                         fine details. To achieve this resolution, the dimensions have
+           where f denotes the motion model, q represents the process                    been set to h = 201 and w = 101. As shown in Fig. 3,
+           noise, y is the measurement vector, h is measurement model,                   the black rectangle positioned at the bottom center of the
+           r corresponds to sensor noise, and N denotes the extent of                    DSM indicates the location of the ego vehicle. At any
+                                                        p
+           thepre-establishedpredictiontimehorizon,withthesubscript                      given time frame, the surrounding vehicles are rasterized
+           VOLUME12,2024                                                                                                                                   55237
+                                                                                                                                             S. Lee et al.: Collision Prediction in an Integrated Framework
+               by illustrating their current position and size using filled                                            To prevent overfitting, dropout is incorporated into the fully
+               bounding boxes. To account for the prediction of future                                                 connected layer [30]. The final step involves applying the
+               motion of these surrounding vehicles, their bounding boxes                                              soft-max function to the output of the last layer, resulting in
+               within the prediction time horizon [t                               , t     , · · · , t        ]        a 13-tuple probability distribution denoted as yˆ. This distri-
+                                                                             k+1 k+2                  k+N
+                                                                                                            p
+               are also rasterized. In the case of these predicted state,                                              bution represents the posterior probabilities associated with
+               boundingboxesarerasterizedwithoutbeingfilled,indicating                                                 collision mode.
+               that they are outlined shapes rather than solid-filled ones.                                                Weutilize the standard cross-entropy loss function, which
+               The color assigned to surrounding vehicles is determined                                                is defined as follows:
+               by probabilistic threat metric. Specifically, we allocate the                                                                                               n    13
+               probabilistic metric(g ) to the red channel. Therefore, the                                                                                           1XXj j
+                                                  p                                                                                          loss y ,yˆ          =                   y logyˆ                       (8)
+               level of brightness in the resulting color indicates the objects                                                                        k     k        n                k        k
+               criticality or threat level. When both the trajectory prediction                                                                                          k=1 j=1
+                                                                                                                                    j
+               and threat metric are rasterized for the target vehicle, the                                            where y represents the j-th element of y and n denotes the
+                                                                                                                                    k                                                   k
+               current position of the target vehicle is indicated by the filled                                       size of the training set.
+               red rectangle, while the predicted position is shown by the                                                 With the trained W∗, for a given input DSM I , its
+                                                                                                                                                                                                               k
+               empty red rectangle in the DSM image in Fig. 3. In the                                                  13-class probability distribution inference yˆk is given as the
+               subsequent step, lane information is transformed into the                                               feed-forward output of the network, i.e., yˆ                         =f(x |W∗).The
+                                                                                                                                                                                         k           k
+               green channel of the DSM.                                                                               predicted collision mode cˆ corresponding to I is the index
+                                                                                                                                                                  k                               k
+               B. CLASSIFICATION AND DECISION                                                                          of yˆk with the maximum probability, i.e.,
+                                                                                                                                                                ∗                      i
+                                                                                                                                                      cˆ   =i =argmax yˆ                                           (9)
+               We establish a CNN-based network denoted as f, which                                                                                     k                       i      k
+               includes a collection of weights represented as W. This                                                                     i
+                                                                                                                       where max yˆ represents a component-wise maximum of yˆ .
+               network takes a DSM image at time k, denoted as I ,                                                                   i     k                                                                         k
+                                                                                                            k              Imperfect or erroneous decisions can be attributed to
+               as its input. The image I is a three-dimensional array with
+                                                       k                                                               factorssuchasnoisysensorsignals,thetopologyoftheneural
+               dimensionsh×w×3.Theprimarypurposeofthisnetworkis                                                        network, and untrained driving scenarios [22]. Considering
+               to produce an output in the form of a probability distribution.                                         that the decision network is not devoid of flaws, occasional
+               Thisdistributionencompasses13distinctclasses:12collision                                                imperfect decisions regarding collision modes may occur.
+               modes illustrated in Fig. 2 and safe class. This notation is                                            In such circumstances, employing a testing method from the
+               expressed as follows:                                                                                   field of fault detection and isolation (FDI) can be beneficial
+                                                    yˆ   =f(I |W)                                          (6)         in addressing the previously mentioned issue. We utilize a
+                                                      k           k
+                                                                                                                       doublethresholdstatisticaltestingmethod,whichisdesigned
+                                     13     i
+               where yˆ        ∈R ,yˆ ∈ 0,1 isthei-th component of yˆ , and
+               P           k                k      [      ]                                           k                to manage the probability of false alarms effectively while
+                   13 yˆi = 1.                                                                                         maximizing the detection capability in FDI. This method
+                   i=1 k
+                   Utilizing the DSM represented by I and its corresponding                                            utilizes two separate tests with two levels of thresholds to
+                                                                           k
+               13-tuple label yk, which is one hot encoded, we proceed                                                 enable the adjustment of the trade-off between detection
+               to train the network with the objective of determining the                                              powerandtheprobabilityoffalsealarms[31].It’s analogous
+               optimal W∗ that minimize a loss function, described as                                                  to the inherent contradiction in collision detection, where
+               follows:                                                                                                the objective is to both predict all collisions and minimize
+                                                             n                                                         erroneous decision. To apply the double threshold testing
+                                W∗=argmin1Xloss y ,yˆ                                                                 method for making decisions regarding collision modes,
+                                                  W n                      k     k
+                                                           k=1                                                         we employ the second level of test from this approach.
+                                                             n                                                         In the second level of the test, a window is introduced, and
+                                       =argmin1Xloss y ,f I |W                                             (7)
+                                                  W n                   ( k       ( k      ))                          collisionmodeclassificationoutcomesderivedfromtheCNN
+                                                           k=1                                                         model are accumulated. Subsequently, the number of each
+                   Given that our DSM-based inputs are compact and                                                     collision mode classification within the window is counted.
+               contain limited data, there is no need for complex neural                                               Following this, the respective probabilities associated with
+               network architectures typically designed for processing                                                 each collision mode are computed and compared against the
+               natural images. Through experimentation, we have selected                                               pre-definedthreshold,ε.Thefinaldecisionruleisformulated
+               a network configuration. The initial two layers carry out                                               as follows:                                  
+               a sequence of operations, including a convolution using                                                                     ˆ
+                                                                                                                                          d     k (N ,cˆ ),ε = cˆ if Pr k                     ≥ε                 (10)
+               3 × 3 filters, a max-pooling operation with a 2 × 2 win-                                                                     k     s    d     k               k         ( s)
+                                                                                                                                    ˆ
+               dow, and the application of the ReLU activation function.                                               where d            indicates the determined collision mode, N
+                                                                                                                                     k                                                                               d
+               The subsequent layer conducts a convolution without the                                                 represents the window,cˆk denotes classification outputs from
+               inclusion of a max-pooling operation. Following this, there                                             the CNN model, and k is the number of respective collision
+                                                                                                                                                           s
+               is a fully connected layer with thirteen output neurons.                                                modeclassifications in the window.
+               55238                                                                                                                                                                                VOLUME12,2024
+         S. Lee et al.: Collision Prediction in an Integrated Framework
+          IV. SCENARIO-BASED TRAINING                                    scenarios, we collected simulation data describing the state
+          A. PRE-CRASH SCENARIO DATABASE                                 of the vehicles. This information included details such as
+         In this study, a database for the development of a conflict     position, velocity, acceleration, width, length, and heading
+         mode judgment model is created and used for training and        angle,anditwasrecordedatintervalsof0.01s,equivalenttoa
+         evaluation. The database consists of simulation data and        frequencyof100Hz.Thisgenerateddataamountstoatotalof
+         experimentaldata.Whentraininganeuralnetworktoidentify           13,750 driving records, representing a driving distance of
+         collision mode, it becomes imperative to incorporate pre-       3,717 kilometers and a cumulative driving time of 68 hours.
+         crash data. In the absence of an accessible open dataset           Theexperimental data utilized in this study were acquired
+         comprising authentic accident driving data derived from         from a vehicle that was equipped with a variety of sensors,
+         onboardsensorsinautonomousvehicles,wehaveundertaken             asdepictedinFig.4.Thesensorsinstalledonthevehiclewere
+         the collection of scenario-based simulation data specifically   used to capture information on the motion of surrounding
+         intendedforthedevelopmentandevaluationofalgorithmsfor           objectsinrealtrafficflow.Specifically,thefrontvisionsensor
+         decision-making regarding collision mode [32]. A collision      was responsible for providing data related to lane markers
+         prediction model trained solely on simulation data may          and nearby objects, including their respective classification
+         exhibit inferior performance in real-world environments.        details. Additionally, the front and corner radar sensors were
+         Therefore, for falsification, where we search for scenarios     utilized to acquire data on the relative position, heading
+         in which the AV fails to meet the required criteria,            angle, velocity, and box size of the surrounding objects in
+         we incorporate experimental data collected from onboard         local body fixed coordinates of the data collection vehicle.
+         sensors in autonomous vehicles into the development of our      Furthermore,alow-costGPSdevicewasemployedforrough
+         proposed algorithm.                                             precision ego localization. All the sensor data obtained were
+            Simulation data acquisition process was executed using       synchronized and stored on an industrial PC. Moreover,
+         the IPG CarMaker simulation platform. In scenario-based         a sensor fusion algorithm was implemented to process the
+         safety assessment, a series of test scenarios is initially      aforementioned sensor data and generate tracks of traffic
+         defined, and accident data can serve as the basis for their     actors, which encompass state estimates that provide more
+         selection [32]. To conduct a statistical analysis of pre-crash  accurate information compared to the data obtained from
+         scenarios, we utilized the crash databases of the Traffic       individual sensors. In this investigation, seven different
+         Accident Analysis System (TAAS) in South Korea spanning         drivers operated the AV to gather data of the surrounding
+         from2012to2014anddatafromtheInitiativefortheGlobal              vehicles on both urban roads and highways in South Korea.
+         HarmonizationofAccidentData(IGLAD)coveringtheyears              Theexperimentaldatasetcorrespondstoadrivingdistanceof
+         2007 to 2018 [33], [34]. From the comprehensive collection      1,787 kilometers and a cumulative driving time of 25 hours.
+         ofscenarioswithinthestatisticaldataset,ourspecificchoices       The average duration of both simulation data is approxi-
+         included 8 non-junction scenarios and 6 junction scenarios.     mately20s.Incontrast,eachsetofrawexperimentaldatahas
+         These scenarios were identified and given slightly modified     adurationof2minutes.Tomaintainuniformityindatalength,
+         namesbasedonpre-crashscenario typology of NHTSA, and            the experimental data was divided into 20-second snippets.
+         the corresponding list is provided in Table 1 [35], [36].          The annotation of collision mode for simulation data
+                                                                         was automatically determined by examining the information
+         TABLE1. Scenario catalog for simulation.                        obtained from the simulation platform. Every 0.01 second,
+                                                                         whichisthesampleperiodweset,thecollisionsensorwithin
+                                                                         the IPG CarMaker simulator produces data indicating the
+                                                                         occurrenceorabsenceofacollisionevent.Theinstancewhen
+                                                                         the collision sensor initially detects a collision is defined as
+                                                                         the moment of impact (t ). Following this, the impact area
+                                                                                                  i
+                                                                         is assessed by considering the position, width, length, and
+                                                                         heading angle at the time of the collision. The distribution
+                                                                         of collision mode annotation is depicted in Fig. 5, while the
+                                                                         distribution of safe annotation is presented in Table 2.
+                                                                            The performance of a data-driven model is notably
+                                                                         impacted by the quality of its training data. A series of
+            Within the selected scenarios, we generated simulation       complexity measures were proposed to quantify information
+         data by employing N-wise sampling for the parameter             within driving scenarios. These measures are associated with
+         space [23]. These parameters included both stationary and       various factors, such as the crowdedness, class diversity, and
+         trigger conditions. The stationary condition encompassed        speed diversity of surrounding objects [37]. The concept of
+         factors such as vehicle position, velocity, and acceleration,   crowdedness, denoted as Ecrowd, is the quantity of objects
+         while the trigger condition included the relative position      within a region of interest (ROI) of ego vehicle. This metric
+         necessary to initiate specific maneuvers, such as cut-in,       is utilized to measure the extent of congestion within a given
+         cut-out, and turns, for each scenario. For each of these        traffic scenario. Additionally, class diversity, symbolized as
+         VOLUME12,2024                                                                                                         55239
+                                                                                                            S. Lee et al.: Collision Prediction in an Integrated Framework
+                            FIGURE 4. Experimental vehicle and its configuration.
+                                                                                           TABLE2. The number of data with safe annotation for scenario catalog.
+                                                                                           concerning individual data as a threat measure, denoted as
+                                                                                           Ethreat, to characterize the criticality of driving environment.
+                                                                                              The distributions of complexity measures and threat
+                                                                                           measures pertaining to simulation and experimental data in
+                                                                                           pre-crash databases are depicted in Fig. 6. In the context
+                                                                                           of simulation data, the crowdedness varies from 0.8 to 1.2,
+                                                                                           class diversity ranges from 1.8 to 2, and the variation in
+                                                                                           the speed of actors spans from 0 to 380, as depicted in
+                                                                                           Fig. 6 (a) to (c). It is notable that Ecrowd, Eclass, and
+                                                                                           Espeed demonstrate distributions within a limited range when
+                                                                                           comparedtoexperimental data. This is reasonable given that
+                                                                                           the generated simulation data typically involves one or two
+                                                                                           vehicles in a single scenario. From the perspective of threat
+                                                                                           measures, the distribution of pre-crash data in simulation
+            FIGURE 5. Distribution of collision mode annotation for scenario catalog,      leans towards high criticality, while the distribution of safe
+            (a) Non-junction scenario, (b) Junction scenario.                              data in simulation tends towards low criticality, as illustrated
+                                                                                           in Fig. 6 (d).
+            Eclass, refers to the variety of different types of actors present                Meanwhile, the three complexity measures exhibit distri-
+            within a traffic scene. Speed diversity, represented by Espeed,                butionswithlargervaluescomparedtothoseofthesimulation
+            denotes the variation in the speed of actors. Furthermore,                     data, as illustrated in Fig. 6 (a) to (c). Crowdedness varies
+            we incorporate the maximum value of collision probability                      from 0.8 to 6, class diversity ranges from 1.1 to 2.4, and the
+            55240                                                                                                                                     VOLUME12,2024
+         S. Lee et al.: Collision Prediction in an Integrated Framework
+                                                                         complex than simulation data, involving a greater number of
+                                                                         objects with diverse classes and a wider variation in speed.
+                                                                         Given that experimental data does not encompass pre-crash
+                                                                         situations, the threat measure is distributed from 0 to 0.4,
+                                                                         representing a lower value than the threat measure associated
+                                                                         with simulation data in Fig. 6 (d).
+                                                                         B. TRAINING
+                                                                         We trained collision mode prediction algorithm using the
+                                                                         active learning method. The fundamental concept behind
+                                                                         active learning is that a machine learning algorithm can
+                                                                         attain higher accuracy with a reduced number of training
+                                                                         data by enabling the algorithm to actively select the data
+                                                                         from which it learns. In the context of object detection, the
+                                                                         active learning process typically comprises four steps: train,
+                                                                         query, annotate, and append. In each iteration of this process,
+                                                                         a scoring function and a sampling strategy in the query step
+                                                                         collaboratively determine which images should be subjected
+                                                                         to manual labeling and subsequently incorporated into the
+                                                                         training data set [38].
+                                                                            In the implementation of a active learning, the data set
+                                                                         described in previous section underwent a specific division
+                                                                         process. Initially, the data was randomly divided into two
+                                                                         sets: one comprising 50% for training and the other 50%
+                                                                         for testing. Within the training data, a further subdivision
+                                                                         took place, with 50% designated as the initial training
+                                                                         data. The remaining 50% of the training data was reserved
+                                                                         for subsequent iterations of the active learning process.The
+                                                                         number of selected training and test data are summarized
+                                                                         in Table 3.
+                                                                         TABLE3. Training and test data.
+                                                                            As shown in Fig. 7, a class imbalance exists within
+                                                                         the training data. Research literature suggests that using
+                                                                         oversampling techniques is an effective method to address
+                                                                         class imbalance within CNN frameworks [39]. Therefore,
+                                                                         to address this class imbalance, oversampling technique
+         FIGURE 6. Complexity measures for pre-crash scenario database,
+         (a) Crowdedness, (b) Class diversity, (c) Speed diversity, (d) Threat.
+         variationinthespeedofactorsspansfrom0to3000.Thisdis-
+         crepancyarises because experimental data is inherently more     FIGURE 7. Distribution of collision mode annotation for training data.
+         VOLUME12,2024                                                                                                         55241
+                                                                              S. Lee et al.: Collision Prediction in an Integrated Framework
+        was utilized during the initial training process, specifically
+        targeting the minority classes linked with side and rear
+        collisions. This involoved duplicating the number of DSM
+        images corresponding to each collision mode within the
+        minority class until achieving a balanced distribution.
+           To increase the inclusion of pre-crash data in our training
+        set, we initially trained model utilizing only simulation data
+        in training data. Subsequently, initially trained model was
+        utilized in the query step to process the initial training
+        data for both simulation and experimental data, thereby
+        enhancing the diversity and complexity of driving scenarios.
+        Theintroduction of automated annotation for collision mode
+        decisions brought about a modification in the original image
+        selection process, which typically relied on the scoring
+        function in the query step, as described in [38]. Instead,
+        the focus shifted to identifying DSM images where the
+        network made erroneous judgments. As a result, all DSM
+        images where the model had made incorrect judgments were
+        included in the existing training set. The subsequent step
+        involved training a completely new model from scratch,
+        leveraging the appended training data set. This iterative
+        cycle was then repeated until every piece of the training
+        data had been considered. During each iteration of active
+        learning, we trained the network for 38,800 iterations using
+        the stochastic gradient descent with momentum method.
+        Weemployed a batch size of 128 and initiated the learning
+        rate at 0.01. Additionally, we reduced the learning rate by a
+        factor of 0.1 after every 10 epochs.
+         C. ANALYSIS OF TRAINING SET
+        In Fig. 8, iteration 1 denotes the initial training data, while
+        iteration 2 represents the appended DSM images comprising
+        both simulation and experimental data in an active learning
+        loop. The distribution of complexity measures and threat
+        measures for the initial training data closely resembles the
+        distribution of complexity and threat measures observed
+        in the simulation data within the database, as illustrated
+        in Fig. 8 (a) to (d).
+           Annotations for the appended DSM images from simula-
+        tiondatainiteration2correspondtothesafe.Thedistribution
+        of complexity measures for these DSM images aligns with
+        the complexity distribution observed in the simulation data
+        withinthedatabase.However,inFig.8(d),thethreatmeasure
+        varies from 0.6 to 1, indicating that the added simulation
+        data in this iteration step contains instances of high-risk data,
+        despite being annotated as safe. The complexity measures
+        of the appended DSM images from experimental data in
+        iteration 2 are as follows: crowdedness ranges from 0.9 to
+        5.4, class diversity spans from 1.4 to 2.5, and the variation
+        in the speed of actors spans from 0 to 3000, as depicted in
+        Fig. 8 (a) to (c). Consequently, the inclusion of these
+        DSMimageswidensthedistributionofcomplexitymeasures        FIGURE 8. Complexity measures for training set over active learning loop,
+        within the training data in iteration 1.                  (a) crowdedness, (b) class diversity, (c) speed diversity, (d) threat.
+         V. TEST AND VALIDATION
+        We assess the performance of our proposed algorithm       algorithms for collision prediction. Model-based algo-
+        by comparing it with both model-based and data-driven     rithms under consideration include the collision index [12],
+        55242                                                                                               VOLUME12,2024
+          S. Lee et al.: Collision Prediction in an Integrated Framework
+          POM [13], and collision probability [16]. Furthermore,                 In addition to the performance metrics mentioned earlier,
+          we incorporate data-driven algorithms such as MCWA                  it is imperative for researchers to take into account the
+          and RCPM in the comparison [17], [18]. Following this,              algorithm’s capacity to predict collision at an early stage.
+          we evaluate the effectiveness of our proposed algorithm for         This holds particular significance in the context of activating
+          predicting collision modes.                                         safety systems, where the timely anticipation of surrounding
+             To facilitate the assessment of algorithm performance for        object collisions is of paramount importance. To facilitate
+          collision prediction, a confusion matrix is employed. This          the comparative evaluation of various collision detection
+          matrix serves to quantify the number of accurate and inac-          algorithms, another metric comes into play. This metric
+          curate predictions in comparison to the actual annotations.         is represented by the decision time (τ ) preceding the
+                                                                                                                           c
+          In this context, ‘‘positive’’ denotes a pre-crash scenario          occurrence of impact. It serves as an indicator, illustrating
+          necessitating the algorithms’ capacity to detect collisions,        the algorithm’s capacity to anticipate collisions in advance.
+          while ‘‘negative’’ represents a safe scenario characterized by      Its definition is as follows:
+          the absence of a need for collision detection. Based on the                                   τ =t −t                          (14)
+          comparison between the timing of impact and the detection                                      c    i    c
+          of collisions, the results of the algorithm can be categorized         Table 4 presents a comprehensive overview of the out-
+          into four distinct groups:                                          comes derived from the active learning loop. The results
+             • True Positive (TP): This category encompasses sit-             of iteration1 emanate from a model trained exclusively on
+               uations where the algorithm successfully predicts a            simulation data. The accuracy in this instance attains 90.7%,
+               collision within 1.5 s prior to the moment of impact (t )      accompanied by a relatively high FPR of 14.5%, in contrast
+                                                                        i     to the FNR of 1.8% for the simulation data. In the case of
+               in a pre-crash scenario.
+             • True Negative (TN): This category pertains to scenarios        experimentaldata,theaccuracyreaches86.9%,accompanied
+               in which the algorithm correctly does not predict a            byanFPRof13.1%.Duetotheabsenceofunsafesituations,
+               collision in a safe situation.                                 there are no values available for the FNR. The performance
+             • FalsePositive(FP):Thisgroupincludescaseswherethe               metrics for iteration2 are derived from a model trained
+               time difference between t and t exceeds 1.5 s (t > t ),        by augmenting the initial simulation data with instances
+                                          i     c                 i    c      that the pre-trained model misjudged, encompassing both
+               witht representingthetimeatwhichthealgorithmfirst
+                     c                                                        simulation and experimental data. Section IV-C provides
+               judges that a collision would occur.
+             • False Negative (FN): Within this group, we find                insights into the initial model trained in iteration1, revealing
+               instanceswherethealgorithmfailstoprovideacollision             misjudgments in simulation data where annotations indicate
+               prediction within 1.5 s before the impact, resulting in a      safety but the risk for surrounding vehicles is high, and
+               missed prediction.                                             in experimental data where the risk is relatively low but
+             Usingthefourcategoriesoutlinedabove,theclassification            the driving situation’s complexity is high. Upon appending
+          performance of the algorithm can be evaluated through the           this misjudged data to the initial training set, the accuracy
+          following metrics [40]:                                             demonstrates an approximately 5% increase, and the FPR
+             • False Positive Rate (FPR): This metric represents the          exhibits an approximately 10% reduction compared to
+               proportion of incorrect collision predictions out of           iteration1 for the simulation data. For experimental data, the
+               all actual safe scenarios. It measures the algorithm’s         accuracyexperiencesa12%enhancement,accompaniedbya
+               tendency to wrongly predict collisions in situations           12%reduction in the FPR.
+               where they do not occur.                                       TABLE4. Collision prediction performance over active learning loop.
+                                   FPR=        FP                    (11)
+                                           FP+TN
+             • False Negative Rate (FNR): The False Negative Rate
+               quantifies the fraction of incorrect predictions of safety
+               (i.e., failure to predict a collision) out of all actual pre-
+               crash scenarios. It assesses the algorithm’s ability to
+               correctly identify potential collisions.
+                                               FN                                Fig. 9 displays the outcomes of collision prediction using
+                                   FNR= FN +TP                       (12)     the proposed algorithm and other algorithms for the scenario
+                                                                              showninFig.1.Inthisparticularscenario,thecollisionevent
+             • Accuracy (ACU): Accuracy is the fraction of correct            occurs at 10.8 s. In this scenario, the collision probability
+               decisions made by the algorithm across all scenarios.          algorithm fails to detect a pre-crash condition before the
+               It provides an overall measure of the algorithm’s cor-         collisionevent.Thehistoryofcollisionprobabilityisdepicted
+               rectness in predicting both collisions and safe scenarios.     in Fig. 9 (b), with collision probability values ranging
+                            ACU =           TP+TN                    (13)     from 0 to 1. A threshold of 0.7 was applied for pre-
+                                     TP+FP+TN+FN                              crash decision, following the established literature. As the
+          VOLUME12,2024                                                                                                                 55243
+                                                                                                             S. Lee et al.: Collision Prediction in an Integrated Framework
+                                                                                            FIGURE 10. Determination of the collision index at the moment of
+                                                                                            collision for straight crossing path at junction scenario.
+                                                                                            ego vehicle, the area of intersection cannot be calculated,
+                                                                                            as depicted in Fig. 10. Therefore, the collision index has
+                                                                                            limitations when it comes to its application in this particular
+                                                                                            pre-crash scenario.
+                                                                                               In Fig. 9 (a), the MLP-based MCWA successfully made
+                                                                                            a pre-crash judgment at 10 s and consistently maintained
+                                                                                            pre-crash judgments until 10.8 s, which was the moment of
+                                                                                            the crash. On the other hand, the RCPM, employing a GASF
+                                                                                            matrix-based CNN model, initially predicted a pre-crash
+                                                                                            decisionat9.9s.However,itincorrectlyassessedthesituation
+                                                                                            as safe from 10.2 s until the moment of the crash.
+                                                                                               The proposed algorithm successfully makes a pre-crash
+                                                                                            assessment at 10.2 s, as demonstrated in Fig. 9 (a). DSMs at
+            FIGURE 9. Comparison of collision prediction results for straight crossing      the time of the first successful assessment and at the time of
+            path at junction scenario, (a) Results for the collision prediction             the crash are presented in Fig. 11 (left). In the left DSM, the
+            algorithms, (b) Collision probability history, (c) The history of ego vehicle
+            risk in POM.                                                                    target vehicle is highlighted in red due to the application of
+                                                                                            probabilistic threat metric in the red channel. The predicted
+            ego vehicle and the target vehicle approach each other,                         position of the target, depicted as a non-filled bounding box,
+            the probability gradually increases, reaching a maximum of                      contacts the side of the ego vehicle represented in black.
+            0.66 at 10.65 s. However, it does not surpass the predefined                    This configuration suggests a hazardous situation with an
+            threshold, resulting in a failed decision. Lowering the                         impendingcollision on the left side of the ego vehicle, which
+            threshold could potentially enable the detection of collisions                  the proposed algorithm identifies as a pre-crash scenario.
+            in this scenario, however it comes with the drawback of an                      In Fig. 11 (right), the DSM corresponding to the moment
+            increased likelihood of false alarms due to its contradictory                   of the actual collision exhibits the target vehicle in a dark
+            nature.                                                                         red hue. This is due to the diminished brightness of the
+               Asdepicted in Fig. 9 (a), the POM successfully identified                    red channel when compared to the left DSM. The reduced
+            a collision event at 10.45 s. The history of ego vehicle risk,                  brightness is a consequence of the relatively small overlap
+            illustrated in Fig. 9 (c), ranging from0to5,representstherisk                   between the target vehicle and the ego vehicle, resulting in
+            value at the center of the ego vehicle in POM. For collision                    a diminished probability of collision. Nevertheless, even in
+            detection, a risk threshold of 0.7 was employed, consistent                     this circumstance, it is noteworthy that the filled bounding
+            withtheliterature.Asthetwovehiclesapproachedeachother,                          box representing the current position of the target vehicle
+            ego vehicle risk value gradually increased and surpassed the
+            threshold at 10.45 s.
+               Thecollisionindexalgorithmisunsuccessfulinpredicting
+            apre-crashconditionbeforetheimpactoccurs.Toinvestigate
+            why the collision index experiences missed detections, the
+            process of calculating the collision index at the collision
+            moment is illustrated in Fig. 10. In this figure, the blue
+            and red bounding boxes represent the ego vehicle and target
+            vehicle, respectively. Two black lines extending from the
+            front bumper of the ego vehicle represent virtual lines
+            generated in the direction of the relative velocity vector to
+            compute the collision index. The collision index is defined
+            as the area of intersection between these lines and the target                  FIGURE 11. DSM images depicting instances of both successful initial
+            vehicle. However, when the impact occurs on the side of the                     decision (at 10.2s) and collision event (at 10.8s).
+            55244                                                                                                                                       VOLUME12,2024
+         S. Lee et al.: Collision Prediction in an Integrated Framework
+         makes direct contact with the left side of the ego vehicle.
+         Once again, the proposed algorithm successfully detects a
+         pre-crash condition based on the information presented in the
+         DSM.Inthisintersectionscenario,thePOM,MCWA,andthe
+         proposed algorithm successfully identified the collision.
+         TABLE5. Comparison of collision prediction performance for simulation
+         data.
+                                                                          FIGURE 12. The presence of a ghost track on the tollgate structure leads
+                                                                          to a false positive.
+                                                                          comparably to model-based algorithms. This indicates that
+                                                                          it inherits the advantages of a model-based approach by
+                                                                          utilizing a model-based methods as input. Consequently,
+                                                                          it is more robust than other data-driven approaches, which
+                                                                          rely solely on state variables such as position, velocity, and
+            Table 5 presents performance metrics related to collision     acceleration as input.
+         prediction for corresponding algorithms using simulation           Given the absence of accidents during experimental data,
+         data. As observed in Table 5, the proposed algorithm exhibits    the situation was not expected to detect collision. The
+         the highest accuracy, the second lowest FNR, and the             majority of instances where false positives occurred can be
+         second lowest FPR. Additionally, it demonstrates the earliest    attributed to the generation of a ghost track around structures,
+         decision time, except for MCWA. The MCWA ranks second            such as tollgates, as illustrated in Fig. 12. The occurrence of
+         best amongthealgorithmsintermsofaccuracy.Thecollision            false positives is, consequently, a result of inaccurate sensor
+         index exhibits the third-highest accuracy, characterized by      measurements.Thisunderscoresthesignificanceoftheenvi-
+         a high FNR and the lowest FPR. Across 14 pre-crash sce-          ronmentperceptionsystem’sabilitytodiscernbetweenghost
+         narios, encompassing safety-critical situations, data-driven     objects and real traffic actors. Consequently, the evaluation
+         approachesexhibithigheraccuracycomparedtomodel-based             results, obtained from both simulated and experimental data,
+         approaches, except for RCPM. This highlights the challenge       demonstrate that the proposed algorithm exhibits balanced
+         faced by model-based approaches, which rely on predefined        performance in comparison to other model-based and data-
+         thresholds for collision detection, in adapting to diverse       driven algorithms.
+         driving scenarios compared to data-driven approaches.              In the evaluation of collision mode decisions, slightly
+            In addition to assessing simulation data, an evaluation of    different performance indices are employed. True positive,
+         experimental data was conducted, as outlined in Table 6. The     employed in the assessment of collision predictions, are
+         proposed algorithm performs similarly to the model-based         subdivided into two distinct categories for the evaluation of
+         algorithms and exhibits approximately 6% higher accu-            collision modes: true prediction and false prediction [41].
+         racy than the data-driven algorithms. For the experimental         • true prediction (tp): This category encompasses situ-
+         data, the model-based algorithm demonstrates superior                 ations where the algorithm successfully identifies an
+         performance compared to previous data-driven algorithms.              impact section within 1.5 s prior to t in a pre-crash
+         Experimental data comprises solely safe situations, yet it                                                  i
+         is characterized by high driving situation complexity and             scenario.
+                                                                            • near false prediction (fp ): In the case of a near false
+         sensor noise. This suggests that prior data-driven approaches                                 n
+         exhibit poor robustness, as evidenced by their higher FPR             prediction,thealgorithmforeseesacollisionwithin1.5s
+                                                                               before t but identifies a distinct impact section adjacent
+         whencomparedtomodel-basedapproachesforexperimental                           i
+         data. On the other hand, the proposed algorithm performs              to the annotation. For example, the algorithm might
+                                                                               predict collision modes 12 when the annotated collision
+                                                                               modeis11.
+         TABLE6. Comparison of collision prediction performance for         • far false prediction(fpf ): The far false prediction cat-
+         experimental data.                                                    egory occurs when the algorithm predicts a collision
+                                                                               but designates a different impact section more than two
+                                                                               impact sections away from the annotation. For instance,
+                                                                               the algorithm may predict collision mode 31 when the
+                                                                               annotated collision mode is 11.
+                                                                            In accordance with the three categories specified above,
+                                                                          as well as TN, FP, and FN, the classification performance
+                                                                          for collision mode can be evaluated through the following
+                                                                          metrics:
+         VOLUME12,2024                                                                                                          55245
+                                                                                                                                     S. Lee et al.: Collision Prediction in an Integrated Framework
+                  • accuracy for collision mode (acucm): The accuracy for                                        VI. CONCLUSION
+                      collision mode is defined as the fraction of correct colli-                                In this study, we present a collision mode prediction algo-
+                      sion modedecisionsmadebythealgorithm.Thismetric                                            rithm that integrates CNN with a model-based threat metric
+                      offers a comprehensive evaluation of the algorithm’s                                       and motion prediction to predict and identify potential colli-
+                      correctness in predicting both collision modes and safe                                    sions and impact section. The driving scene and model-based
+                      scenarios.                                                                                 algorithms are reconstructed in a simplified bird’s-eye view
+                            acu       =                      tp +TN                                (15)          representation, which serves as the input for the CNN-based
+                                 cm       tp +fp +fp +FP+TN +FN                                                  approach. The proposed algorithm’s development relies on
+                                                     n        f                                                  a pre-crash database, utilizing simulation data for collision
+                  • relaxed accuracy for collision mode (racu                                  ):   The
+                                                                                           cm                    mode prediction and experimental data for falsification.
+                      relaxed accuracy for collision mode extends the accu-                                      To train the model in this study, active learning is employed
+                      racy for collision mode by permitting near false                                           to select training data from both simulation and experi-
+                      predictions to be considered correct collision mode                                        mental dataset. Performance improvement is observed by
+                      decisions within the acu metric.                                                           augmentingthetraining data with instances where the model
+                                                         tp +fp +TN
+                           racu        =                            n                              (16)          made incorrect decisions. The evaluation results indicate
+                                  cm       tp +fp +fp +FP+TN +FN
+                                                      n        f                                                 that the proposed algorithm demonstrates a more balanced
+                  Table 7 presents the outcomes of collision mode assess-                                        performance compared to previously suggested model-based
+              ment within the active learning loop. Similar to the case of                                       and data-driven algorithms for collision prediction.
+              collision prediction, it is evident that the results of iteration 2                                    In future work, other deep neural network architectures
+              surpass those of iteration 1 by 8% in terms of accuracy for                                        adept at processing sequential data, such as long short-term
+              collision mode and about 7% in terms of relaxed accuracy                                           memory (LSTM), CNN-LSTM, and transformer, will be
+              for collision mode. Table 8 illustrates the performance of                                         examined.Moreover,thecollisionmodepredictionalgorithm
+              class-wise accuracy for collision mode based on the results                                        will be applied to vulnerable road user (VRU). By leveraging
+              obtained from iteration 2. The relaxed class-wise accuracy                                         pre-crash information pertaining to VRU, opportunities for
+              for collision mode shows an improvement ranging from                                               enhancing the performance of passive safety systems for
+              6% to 18% for collision modes 11, 12, and 13, which                                                VRU, such as pedestrian airbags and active hood lifts, can
+              correspond to the frontal side of the ego vehicle. In contrast,                                    be explored.
+              concerningtheremainingcollisionmodes,relaxedclass-wise
+              accuracy for collision mode showcases a marginally superior                                        REFERENCES
+              performance as opposed to class-wise accuracy for collision                                         [1] J. B. Cicchino, ‘‘Effectiveness of forward collision warning and
+              mode. The enhanced performance of relaxed accuracy in                                                     autonomous emergency braking systems in reducing front-to-rear crash
+              comparison to accuracy indicates that the proposed collision                                              rates,’’ Accident Anal. Prevention, vol. 99, pp. 142–152, Feb. 2017, doi:
+                                                                                                                        10.1016/j.aap.2016.11.009.
+              modepredictionalgorithmforecaststheimpactsectionasthe                                               [2] National Transportation Safety Board. (2016). Highway Accident Report,
+              areaadjacenttotheannotation,ratherthanmisclassifyingitas                                                  Collision Between a Car Operating with Automated Vehicle Con-
+              an area distant from the annotation when the collision mode                                               trol  Systems and a Tractor-Semitrailer Truck. [Online]. Available:
+                                                                                                                        https://data.ntsb.gov/Docket/?NTSBNumber=HWY16FH018
+              does not precisely match the annotation.                                                            [3] National Transportation Safety Board. Vehicle Automation Report,
+                                                                                                                        Tempe,    Arizona.     Accessed:     Nov. 5, 2019. [Online]. Available:
+                                                                                                                        https://data.ntsb.gov/Docket/?NTSBNumber=HWY18MH010
+              TABLE7. Collision mode decision performance over active learning loop.                              [4] National      Highway Traffic          Safety    Administration.      (Oct.    2023).
+                                                                                                                        Part573     Safety     Recall    Report      23E-086.      [Online].     Available:
+                                                                                                                        https://static.nhtsa.gov/odi/rcl/2023/RCLRPT-23E086-7725.PDF
+                                                                                                                  [5] A. M. Eigen and W. G. Najm, Problem Definition for Pre-Crash Sensing
+                                                                                                                        Advanced Restraints, document DOT HS 811 114, U.S. Department of
+                                                                                                                        Transportation, Apr. 2009.
+                                                                                                                  [6] Euro      NCAP, Leuven, Blgium.               Euro     NCAP 2025 Roadmap.
+                                                                                                                        Accessed: Apr. 3, 2020. [Online]. Available: https://cdn.euroncap.
+              TABLE8. Class-wise collision mode decision performance.                                                   com/media/30700/euroncap-roadmap-2025-v4.pdf
+                                                                                                                  [7] J. Dahl, G. R. de Campos, C. Olsson, and J. Fredriksson, ‘‘Collision
+                                                                                                                        avoidance: A literature review on threat-assessment techniques,’’ IEEE
+                                                                                                                        Trans. Intell. Vehicles, vol. 4, no. 1, pp. 101–113, Mar. 2019.
+                                                                                                                  [8] A. Doi, ‘‘Development of a rear-end collision avoidance system with
+                                                                                                                        automatic brake control,’’ JSAE Rev., vol. 15, no. 4, pp. 335–340,
+                                                                                                                        Oct. 1994.
+                                                                                                                  [9] Y.Fujita,K.Akuzawa,andM.Sato,‘‘Radarbrakesystem,’’inProc.Annu.
+                                                                                                                        Meet. ITS Amer., vol. 1, 1995, pp. 95–101.
+                                                                                                                 [10] P. Barber and N. Clarke, ‘‘Advanced collision warning systems,’’ in Proc.
+                                                                                                                        IEEColloq.Ind.Autom.Control,Appl.Automot.Ind.,London,U.K.,1998,
+                                                                                                                        pp. 2–12.
+                                                                                                                 [11] E. Coelingh, A. Eidehall, and M. Bengtsson, ‘‘Collision warning with full
+                                                                                                                        auto brake and pedestrian detection—A practical example of automatic
+                                                                                                                        emergency braking,’’ in Proc. 13th Int. IEEE Conf. Intell. Transp. Syst.,
+                                                                                                                        Sep. 2010, pp. 155–160.
+              55246                                                                                                                                                                       VOLUME12,2024
+             S. Lee et al.: Collision Prediction in an Integrated Framework
+             [12] N. Kaempchen, B. Schiele, and K. Dietmayer, ‘‘Situation assessment of               [33] Korea Road Traffic Authority, 2016. (2016). Traffic Accident Analysis
+                   an autonomous emergency brake for arbitrary vehicle-to-vehicle collision                 System. [Online]. Available: http://taas.koroad.or.kr/.
+                   scenarios,’’ IEEE Trans. Intell. Transp. Syst., vol. 10, no. 4, pp. 678–687,       [34] (Jul. 2023). Initiative for the Global Harmonisation of Accident Data.
+                   Dec. 2009.                                                                               [Online]. Available: http://www.iglad.net/
+             [13] K. Lee and D. Kum, ‘‘Collision avoidance/mitigation system: Motion                  [35] W. G. Najm, ‘‘Pre-crash scenario typology for crash avoidance
+                   planning of autonomous vehicle via predictive occupancy map,’’ IEEE                      research,’’ Nat. Highway Traffic Saf. Admin., Washington, DC, USA,
+                   Access, vol. 7, pp. 52846–52857, 2019.                                                   Tech. Rep. DOT HS 810 767, 2007.
+             [14] J.Jansson,J.Johansson,andF.Gustafsson,‘‘Decisionmakingforcollision                  [36] E. Thorn, ‘‘A framework for automated driving system testable cases
+                   avoidance systems,’’ presented at the SAE 2002 World Congr. Exhib.,                      and scenarios,’’ U.S. Dept. Transp., Nat. Highway Traffic Saf. Admin.,
+                   Mar. 2002, doi: 10.4271/2002-01-0403.                                                    Washington, DC, USA, Tech. Rep. HS 812 623, 2018.
+             [15] M. Althoff, O. Stursberg, and M. Buss, ‘‘Model-based probabilistic                  [37] A. Sadat, S. Segal, S. Casas, J. Tu, B. Yang, R. Urtasun, and E. Yumer,
+                   collision detection in autonomous driving,’’ IEEE Trans. Intell. Transp.                 ‘‘Diverse complexity measures for dataset curation in self-driving,’’
+                   Syst., vol. 10, no. 2, pp. 299–310, Jun. 2009.                                           in Proc. IEEE/RSJ Int. Conf. Intell. Robots Syst. (IROS), Sep. 2021,
+             [16] J. Jansson, ‘‘Collision avoidance theory: With application to automotive                  pp. 8609–8616.
+                   collision mitigation,’’ Ph.D. dissertation, Linköping Univ. Electron. Press,       [38] E. Haussmann, M. Fenzi, K. Chitta, J. Ivanecky, H. Xu, D. Roy, A. Mittel,
+                   Linköping, Sweden, 2005.                                                                 N.Koumchatzky,C.Farabet,andJ.M.Alvarez,‘‘Scalable active learning
+             [17] D. Lee and H. Yeo, ‘‘Real-time rear-end collision-warning system using a                  for object detection,’’ in Proc. IEEE Intell. Vehicles Symp. (IV), Oct. 2020,
+                   multilayer perceptron neural network,’’ IEEE Trans. Intell. Transp. Syst.,               pp. 1430–1435.
+                   vol. 17, no. 11, pp. 3087–3097, Nov. 2016.                                         [39] M. Buda, A. Maki, and M. A. Mazurowski, ‘‘A systematic study of the
+             [18] X.Wang,J.Liu,T.Qiu,C.Mu,C.Chen,andP.Zhou,‘‘Areal-timecollision                            class imbalance problem in convolutional neural networks,’’ Neural Netw.,
+                   prediction mechanism with deep learning for intelligent transportation                   vol. 106, pp. 249–259, Oct. 2018.
+                   system,’’ IEEE Trans. Veh. Technol., vol. 69, no. 9, pp. 9497–9508,                [40] R. Song and B. Li, ‘‘Surrounding vehicles’ lane change maneuver
+                   Sep. 2020.                                                                               predictionanddetectionforintelligentvehicles:Acomprehensivereview,’’
+             [19] A. V. Malawade, S.-Y. Yu, B. Hsu, D. Muthirayan, P. P. Khargonekar,                       IEEETrans.Intell. Transp. Syst., vol. 23, no. 7, pp. 6046–6062, Jul. 2022.
+                   and M. A. A. Faruque, ‘‘Spatiotemporal scene-graph embedding for                   [41] A. Jain, H. S. Koppula, B. Raghavan, S. Soh, and A. Saxena, ‘‘Car
+                   autonomous vehicle collision prediction,’’ IEEE Internet Things J., vol. 9,              that knows before you do: Anticipating maneuvers via learning temporal
+                   no. 12, pp. 9379–9388, Jun. 2022.                                                        drivingmodels,’’inProc.IEEEInt.Conf.Comput.Vis.(ICCV),Dec.2015,
+             [20] S. Mozaffari, O. Y. Al-Jarrah, M. Dianati, P. A. Jennings, and                            pp. 3182–3190.
+                   A. Mouzakitis, ‘‘Deep learning-based vehicle behaviour prediction for
+                   autonomous driving applications: A review,’’ IEEE Trans. Intell.
+                   Transp. Syst, vol. 23, no. 1, pp. 33–47, Aug. 2020.
+             [21] M.Strickland, G. Fainekos, and H. B. Amor, ‘‘Deep predictive models for                                         SUNGWOO LEE received the B.S. and M.S.
+                   collision risk assessment in autonomous driving,’’ in Proc. IEEE Int. Conf.                                    degrees in mechanical engineering from Ajou
+                   Robot. Autom. (ICRA), May 2018, pp. 4685–4692.                                                                 University, Suwon, South Korea, in 2016 and
+             [22] S.Grigorescu,B.Trasnea,T.Cocias,andG.Macesanu,‘‘Asurveyofdeep                                                   2018, respectively, where he is currently pursuing
+                   learningtechniquesforautonomousdriving,’’J.FieldRobot.,vol.37,no.3,                                            the Ph.D. degree. His research interests include
+                   pp. 362–386, Apr. 2020.                                                                                        sensor fusion, threat assessment, and autonomous
+             [23] S. Riedmaier, T. Ponn, D. Ludwig, B. Schick, and F. Diermeyer, ‘‘Survey                                         vehicles.
+                   onscenario-basedsafetyassessmentofautomatedvehicles,’’IEEEAccess,
+                   vol. 8, pp. 87456–87477, 2020.
+             [24] M. Bunse, A. Kuttenberger, M. Theisen, T. Sohnke, J. S. Sangorrin,
+                   J. Hoetzel, and P. Knoll, ‘‘System architecture and algorithm for advanced
+                   passive safety by integration of surround sensing information,’’ presented
+                   at the Soc. Automot. Eng. Int., Detroit, MI, USA, 2005.                                                        BONGSOB SONG received the B.S. degree in
+             [25] K.Cho,S.B.Choi,andH.Lee,‘‘Designofanairbagdeploymentalgorithm                                                   mechanicalengineeringfromHanyangUniversity,
+                   based on precrash information,’’ IEEE Trans. Veh. Technol., vol. 60, no. 4,                                    Seoul, South Korea, in 1996, and the M.S. and
+                   pp. 1438–1452, May 2011.                                                                                       Ph.D. degrees in mechanical engineering from
+             [26] M.Wisch,‘‘Car-to-car accidents at intersections in Europe and identifica-                                       the University of California at Berkeley (UC
+                   tion of use cases for the test and assessment of respective active vehicle                                     Berkeley), Berkeley, CA, USA, in 1999 and
+                   safety systems,’’ in Proc. 26th Int. Tech. Conf. Enhanced Saf. Vehicles                                        2002, respectively. He was a Research Engineer
+                   (ESV),EnablingSaferTomorrow,Eindhoven,TheNetherlands,Jun.2019,                                                 with California Partners for Advanced Transit
+                   pp. 10–13.                                                                                                     and Highways Program, UC Berkeley, until 2003.
+             [27] N. Deo, A. Rangesh, and M. M. Trivedi, ‘‘How would surround vehicles                                            He is currently a Professor with the Department
+                   move? A unified framework for maneuver classification and motion                   of AI Mobility and Mechanical Engineering, Ajou University, Suwon,
+                   prediction,’’ IEEE Trans. Intell. Vehicles, vol. 3, no. 2, pp. 129–140,            South Korea. His research interests include sensor fusion, convex opti-
+                   Jun. 2018.
+             [28] N. Kaempchen, K. Weiss, M. Schaefer, and K. C. J. Dietmayer, ‘‘IMM                  mization, collision avoidance, and threat assessment with applications to
+                   objecttrackingforhighdynamicdrivingmaneuvers,’’inProc.IEEEIntell.                  intelligent vehicles.
+                   Vehicles Symp., Jun. 2004, pp. 825–830.
+             [29] J.Guo,U.Kurup,andM.Shah,‘‘Isitsafetodrive?Anoverviewoffactors,
+                   metrics, and datasets for driveability assessment in autonomous driving,’’                                     JANGHO SHIN received the B.S. and M.S.
+                   IEEETrans.Intell.Transp.Syst.,vol.21,no.8,pp. 3135–3151,Aug.2020.                                              degrees in automotive engineering from Hanyang
+             [30] N.    Srivastava,   G.   Hinton,    A.   Krizhevsky,    I.  Sutskever,   and                                    University, Seoul, South Korea, in 1995 and 1997,
+                   R. Salakhutdinov, ‘‘Dropout: A simple way to prevent neural networks                                           respectively, and the Ph.D. degree in mechanical
+                   from overfitting,’’ J. Mach. Learn. Res., vol. 15, no. 1, pp. 1929–1958,                                       engineeringfromtheUniversityofMichigan,Ann
+                   2014.                                                                                                          Arbor, MI, USA, in 2007. He is currently a Senior
+             [31] X. Fang, J. Gertler, M. Kunwer, J. Heron, and T. Barkana, ‘‘A double                                            ResearchEngineerwithHyundaiMotorCompany,
+                   threshold-testingrobustmethodforfaultdetectionandisolationindynamic                                            Hwaseong, South Korea. His research interests
+                   systems,’’ in Proc. Amer. Control Conf., vol. 2, 1994, pp. 1979–1983.
+             [32] P. Junietz, W. Wachenfeld, K. Klonecki, and H. Winner, ‘‘Evaluation of                                          include integrated safety systems, autonomous
+                   different approaches to address safety validation of automated driving,’’ in                                   vehicle, and safety performance development.
+                   Proc. 21st Int. Conf. Intell. Transp. Syst. (ITSC), Nov. 2018, pp. 491–496.
+             VOLUME12,2024                                                                                                                                                       55247

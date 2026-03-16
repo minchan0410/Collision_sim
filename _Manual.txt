@@ -78,3 +78,9 @@ python viz.py --config configs/mat.yaml --dataset mat_mini --checkpoint experime
 --num_examples 2 : 몇개 테스트?
 --num_samples 20 : 한 테스트 당 샘플 경로를 몇개 만들지
 --output_dir : output 경로 
+
+## Timebase (Single Source)
+- Set data_dt in configs/mat.yaml.
+- process_data_mat.py / getparam.py use this by default (unless --dt is passed).
+- mat2txt.py also uses it when --target-dt is omitted.
+

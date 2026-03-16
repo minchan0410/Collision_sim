@@ -1,36 +1,105 @@
-import sys
+﻿import sys
 import os
 import argparse
 import numpy as np
 import pandas as pd
 import dill
+import yaml
 
-# environment 모듈이 동일한 디렉토리 혹은 PYTHONPATH 내에 있어야 합니다.
+# environment 紐⑤뱢???숈씪???붾젆?좊━ ?뱀? PYTHONPATH ?댁뿉 ?덉뼱???⑸땲??
 from environment import Environment, Scene, Node, derivative_of
 
 desired_max_time = 100
 pred_indices = [2, 3]
-state_dim = 6
+state_dim = 8
 frame_diff = 10
 desired_frame_diff = 1
-dt = 0.1
+dt = None
 
 standardization = {
     'PEDESTRIAN': {
         'position': {
-            'x': {'mean': 0, 'std': 6.22},
-            'y': {'mean': 0, 'std': 27.19}
+            'x': {'mean': 0, 'std': 3.91},
+            'y': {'mean': 0, 'std': 13.49}
         },
         'velocity': {
-            'x': {'mean': 0, 'std': 4.20},
-            'y': {'mean': 0, 'std': 9.82}
+            'x': {'mean': 0, 'std': 5.06},
+            'y': {'mean': 0, 'std': 9.61}
         },
         'acceleration': {
-            'x': {'mean': 0, 'std': 1.88},
-            'y': {'mean': 0, 'std': 2.68}
+            'x': {'mean': 0, 'std': 3.93},
+            'y': {'mean': 0, 'std': 3.30}
+        },
+        'heading': {
+            'yaw': {'mean': 0, 'std': 0.57},
+            'yaw_rate': {'mean': 0, 'std': 0.14}
         }
     }
 }
+
+
+def make_data_columns():
+    return pd.MultiIndex.from_tuples([
+        ('position', 'x'),
+        ('position', 'y'),
+        ('velocity', 'x'),
+        ('velocity', 'y'),
+        ('acceleration', 'x'),
+        ('acceleration', 'y'),
+        ('heading', 'yaw'),
+        ('heading', 'yaw_rate'),
+    ])
+
+
+def wrap_to_pi(angle):
+    return (angle + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def build_yaw_series(raw_yaw, x, y, speed_eps=1.0e-3):
+    """
+    Build a finite yaw(rad) sequence from:
+    1) raw yaw column if present,
+    2) fallback heading from trajectory direction.
+    """
+    x = np.asarray(x, dtype=float).reshape(-1)
+    y = np.asarray(y, dtype=float).reshape(-1)
+    n = x.shape[0]
+    yaw = np.full((n,), np.nan, dtype=float)
+
+    if raw_yaw is not None:
+        raw = np.asarray(raw_yaw, dtype=float).reshape(-1)
+        if raw.shape[0] == n:
+            finite_raw = np.isfinite(raw)
+            yaw[finite_raw] = wrap_to_pi(raw[finite_raw])
+
+    if n >= 2:
+        dx = np.diff(x)
+        dy = np.diff(y)
+        speed = np.hypot(dx, dy)
+        motion = np.full((n,), np.nan, dtype=float)
+        valid = np.isfinite(dx) & np.isfinite(dy) & (speed > speed_eps)
+        motion[:-1][valid] = np.arctan2(dy[valid], dx[valid])
+        motion[-1] = motion[-2]
+
+        missing = ~np.isfinite(yaw)
+        yaw[missing] = motion[missing]
+
+    finite = np.isfinite(yaw)
+    if not np.any(finite):
+        yaw.fill(0.0)
+        return yaw
+
+    first_valid = int(np.flatnonzero(finite)[0])
+    yaw[:first_valid] = yaw[first_valid]
+
+    prev = float(yaw[first_valid])
+    for i in range(first_valid + 1, n):
+        if np.isfinite(yaw[i]):
+            prev = float(yaw[i])
+        else:
+            yaw[i] = prev
+
+    return wrap_to_pi(yaw)
 
 def maybe_makedirs(path_to_create):
     try:
@@ -39,33 +108,60 @@ def maybe_makedirs(path_to_create):
         if not os.path.isdir(path_to_create):
             raise
 
+
+def load_data_dt_from_mat_yaml():
+    config_path = os.path.join('configs', 'mat.yaml')
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Required config not found: {config_path}")
+
+    with open(config_path, 'r', encoding='utf-8') as f:
+        cfg = yaml.safe_load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError(f"Invalid YAML content in {config_path}")
+    if 'data_dt' not in cfg:
+        raise KeyError(f"'data_dt' is missing in {config_path}")
+
+    dt_cfg = float(cfg['data_dt'])
+    if dt_cfg <= 0:
+        raise ValueError(f"'data_dt' must be positive in {config_path}, got {dt_cfg}")
+    return dt_cfg
+
 def augment_scene(scene, angle):
     def rotate_pc(pc, alpha):
         M = np.array([[np.cos(alpha), -np.sin(alpha)],
                       [np.sin(alpha), np.cos(alpha)]])
         return M @ pc
 
-    data_columns = pd.MultiIndex.from_product([['position', 'velocity', 'acceleration'], ['x', 'y']])
+    data_columns = make_data_columns()
     scene_aug = Scene(timesteps=scene.timesteps, dt=scene.dt, name=scene.name)
     alpha = angle * np.pi / 180
 
     for node in scene.nodes:
-        x = np.array(node.data.position.x, dtype=float)
-        y = np.array(node.data.position.y, dtype=float)
+        x_src = np.array(node.data.position.x, dtype=float)
+        y_src = np.array(node.data.position.y, dtype=float)
 
-        x, y = rotate_pc(np.array([x, y]), alpha)
+        x, y = rotate_pc(np.array([x_src, y_src]), alpha)
 
         vx = derivative_of(x, scene.dt)
         vy = derivative_of(y, scene.dt)
         ax = derivative_of(vx, scene.dt)
         ay = derivative_of(vy, scene.dt)
 
+        try:
+            yaw_src = np.array(node.data[:, ('heading', 'yaw')], dtype=float).reshape(-1)
+        except Exception:
+            yaw_src = build_yaw_series(None, x_src, y_src)
+        yaw = wrap_to_pi(yaw_src + alpha)
+        yaw_rate = derivative_of(np.unwrap(yaw), scene.dt)
+
         data_dict = {('position', 'x'): x,
                      ('position', 'y'): y,
                      ('velocity', 'x'): vx,
                      ('velocity', 'y'): vy,
                      ('acceleration', 'x'): ax,
-                     ('acceleration', 'y'): ay}
+                     ('acceleration', 'y'): ay,
+                     ('heading', 'yaw'): yaw,
+                     ('heading', 'yaw_rate'): yaw_rate}
 
         node_data = pd.DataFrame(data_dict, columns=data_columns)
         node = Node(node_type=node.type, node_id=node.id, data=node_data, first_timestep=node.first_timestep)
@@ -80,44 +176,49 @@ def augment_scene(scene, angle):
 #     return scene
 
 def augment(scene):
-    # 원본 씬과 미세 회전된 씬들을 합쳐서 그 중 하나를 무작위로 선택
+    # ?먮낯 ?ш낵 誘몄꽭 ?뚯쟾???щ뱾???⑹퀜??洹?以??섎굹瑜?臾댁옉?꾨줈 ?좏깮
     choices = [scene] + (scene.augmented if hasattr(scene, 'augmented') else [])
     scene_aug = np.random.choice(choices)
     
-    # 모델 학습에 필수적인 씬 그래프(주변 차량 관계망) 정보를 복사해줌
+    # 紐⑤뜽 ?숈뒿???꾩닔?곸씤 ??洹몃옒??二쇰? 李⑤웾 愿怨꾨쭩) ?뺣낫瑜?蹂듭궗?댁쨲
     scene_aug.temporal_scene_graph = scene.temporal_scene_graph
     return scene_aug
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="분리된 보행자 데이터셋을 전처리합니다.")
-    parser.add_argument('--suffix', type=str, default='', help='데이터셋 폴더의 접미사 (예: mimi 입력 시 train_mimi 탐색)')
+    parser = argparse.ArgumentParser(description="遺꾨━??蹂댄뻾???곗씠?곗뀑???꾩쿂由ы빀?덈떎.")
+    parser.add_argument('--suffix', type=str, default='', help='?곗씠?곗뀑 ?대뜑???묐???(?? mimi ?낅젰 ??train_mimi ?먯깋)')
     args = parser.parse_args()
+
+    dt = load_data_dt_from_mat_yaml()
+    if dt <= 0:
+        raise ValueError(f"dt must be positive, got {dt}")
+    print(f"[INFO] process_data_mat dt={dt:.6f} sec (from configs/mat.yaml)")
 
     data_folder_name = 'processed_data'
     maybe_makedirs(data_folder_name)
 
-    data_columns = pd.MultiIndex.from_product([['position', 'velocity', 'acceleration'], ['x', 'y']])
+    data_columns = make_data_columns()
     base_input_dir = os.path.join('mat_preprocess', 'mat_txt')
 
     dir_suffix = f"_{args.suffix}" if args.suffix else ""
 
     for base_class in ['train', 'val', 'test']:
-        # 읽어올 대상 폴더명 (예: train_mimi)
+        # ?쎌뼱??????대뜑紐?(?? train_mimi)
         folder_name = f"{base_class}{dir_suffix}"
         target_dir = os.path.join(base_input_dir, folder_name)
         
-        # [수정됨] 저장될 파일 및 Scene 객체의 이름 설정 (예: mat_mimi_train)
+        # [?섏젙?? ??λ맆 ?뚯씪 諛?Scene 媛앹껜???대쫫 ?ㅼ젙 (?? mat_mimi_train)
         if args.suffix:
             output_name = f"mat_{args.suffix}_{base_class}"
         else:
             output_name = f"mat_{base_class}"
         
         if not os.path.exists(target_dir):
-            print(f"경고: {target_dir} 경로가 존재하지 않아 건너뜁니다.")
+            print(f"寃쎄퀬: {target_dir} 寃쎈줈媛 議댁옱?섏? ?딆븘 嫄대꼫?곷땲??")
             continue
             
-        print(f"[{folder_name.upper()}] 데이터 처리를 시작합니다...")
+        print(f"[{folder_name.upper()}] ?곗씠??泥섎━瑜??쒖옉?⑸땲??..")
         
         env = Environment(node_type_list=['PEDESTRIAN'], standardization=standardization)
         attention_radius = dict()
@@ -126,7 +227,7 @@ if __name__ == '__main__':
 
         scenes = []
         
-        # [수정됨] 파일명에 output_name 적용
+        # [?섏젙?? ?뚯씪紐낆뿉 output_name ?곸슜
         data_dict_path = os.path.join(data_folder_name, f'{output_name}.pkl')
 
         for subdir, dirs, files in os.walk(target_dir):
@@ -135,13 +236,19 @@ if __name__ == '__main__':
                     full_data_path = os.path.join(subdir, file)
                     print('Processing:', full_data_path)
 
-                    data = pd.read_csv(full_data_path, sep='\s+', index_col=False, header=None)
-                    
-                    data = data.iloc[:, :4] 
-                    data.columns = ['frame_id', 'track_id', 'pos_x', 'pos_y']
+                    data = pd.read_csv(full_data_path, sep=r'\s+', index_col=False, header=None)
+
+                    if data.shape[1] >= 5:
+                        data = data.iloc[:, :5]
+                        data.columns = ['frame_id', 'track_id', 'pos_x', 'pos_y', 'yaw']
+                    else:
+                        data = data.iloc[:, :4]
+                        data.columns = ['frame_id', 'track_id', 'pos_x', 'pos_y']
+                        data['yaw'] = np.nan
                     
                     data['frame_id'] = pd.to_numeric(data['frame_id'], downcast='integer')
                     data['track_id'] = pd.to_numeric(data['track_id'], downcast='integer')
+                    data['yaw'] = pd.to_numeric(data['yaw'], errors='coerce')
 
                     data['frame_id'] -= data['frame_id'].min()
 
@@ -155,7 +262,7 @@ if __name__ == '__main__':
 
                     max_timesteps = data['frame_id'].max()
 
-                    # [수정됨] Scene 생성 시에도 name에 output_name을 할당하여 내부 데이터 구조의 일관성 유지
+                    # [?섏젙?? Scene ?앹꽦 ?쒖뿉??name??output_name???좊떦?섏뿬 ?대? ?곗씠??援ъ“???쇨????좎?
                     scene = Scene(timesteps=max_timesteps+1, dt=dt, name=output_name, aug_func=augment if base_class == 'train' else None)
 
                     for node_id in pd.unique(data['node_id']):
@@ -173,13 +280,18 @@ if __name__ == '__main__':
                         vy = derivative_of(y, scene.dt)
                         ax = derivative_of(vx, scene.dt)
                         ay = derivative_of(vy, scene.dt)
+                        yaw_raw = node_df['yaw'].to_numpy(dtype=float)
+                        yaw = build_yaw_series(yaw_raw, x, y)
+                        yaw_rate = derivative_of(np.unwrap(yaw), scene.dt)
 
                         data_dict = {('position', 'x'): x,
                                      ('position', 'y'): y,
                                      ('velocity', 'x'): vx,
                                      ('velocity', 'y'): vy,
                                      ('acceleration', 'x'): ax,
-                                     ('acceleration', 'y'): ay}
+                                     ('acceleration', 'y'): ay,
+                                     ('heading', 'yaw'): yaw,
+                                     ('heading', 'yaw_rate'): yaw_rate}
 
                         node_data = pd.DataFrame(data_dict, columns=data_columns)
                         node = Node(node_type=env.NodeType.PEDESTRIAN, node_id=node_id, data=node_data)
@@ -210,4 +322,4 @@ if __name__ == '__main__':
                 dill.dump(env, f, protocol=dill.HIGHEST_PROTOCOL)
             print(f"Saved to {data_dict_path}\n")
 
-    print("모든 처리가 완료되었습니다.")
+    print("紐⑤뱺 泥섎━媛 ?꾨즺?섏뿀?듬땲??")
