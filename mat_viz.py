@@ -5,6 +5,7 @@ import shutil
 import sys
 import types
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -24,36 +25,88 @@ except Exception:
             self[key] = value
 
 
+USER_DEFAULTS = {
+    # Run with no args: python mat_viz.py
+    # Latest checkpoint is selected from ckpt_dir.
+    "config": "configs/mat.yaml",
+    "ckpt_dir": "experiments/mat",
+    "output_dir": "results/mat_viz/",
+    "dataset": "",
+    "seed": 123,
+    # Fixed counts unless overridden by CLI.
+    "viz_num_examples": 30,
+    "viz_num_samples": 1,
+    "sampling": "",
+    "viz_epoch_tag": None,
+}
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Visualize MAT checkpoint predictions using MID._visualize_epoch"
     )
-    parser.add_argument("--config", default="configs/mat.yaml", help="Path to yaml config")
-    parser.add_argument("--exp_dir", default="experiments/mat", help="Experiment directory containing .pt files")
-    parser.add_argument("--dataset", default="", help="Dataset name override (e.g., mat_collision)")
-    parser.add_argument("--ckpt", default="", help="Checkpoint path or filename under exp_dir")
+    parser.add_argument("--config", default=USER_DEFAULTS["config"], help="Path to yaml config")
+    parser.add_argument(
+        "--ckpt_dir",
+        default=USER_DEFAULTS["ckpt_dir"],
+        help="Checkpoint directory (.pt files). Latest is used by default.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        default=USER_DEFAULTS["output_dir"],
+        help="Output directory root for generated images.",
+    )
+    # Backward compatibility: legacy one-dir option for both ckpt/input and output.
+    parser.add_argument("--exp_dir", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--dataset", default=USER_DEFAULTS["dataset"], help="Dataset name override (e.g., mat_collision)")
+    parser.add_argument("--ckpt", default="", help="Checkpoint path or filename under ckpt_dir")
     parser.add_argument(
         "--ckpt_index",
         type=int,
         default=None,
         help="Select checkpoint by index from --list_ckpts output (0 = latest)",
     )
-    parser.add_argument("--list_ckpts", action="store_true", help="List checkpoints in exp_dir and exit")
-    parser.add_argument("--seed", type=int, default=123, help="Random seed for scene/timestep sampling")
-    parser.add_argument("--viz_num_examples", type=int, default=None, help="Override mat.yaml viz_num_examples")
-    parser.add_argument("--viz_num_samples", type=int, default=None, help="Override mat.yaml viz_num_samples")
-    parser.add_argument("--sampling", default="", help="Override sampling method (ddpm/ddim)")
+    parser.add_argument("--list_ckpts", action="store_true", help="List checkpoints in ckpt_dir and exit")
+    parser.add_argument("--seed", type=int, default=USER_DEFAULTS["seed"], help="Random seed for scene/timestep sampling")
+    parser.add_argument(
+        "--viz_num_examples",
+        type=int,
+        default=USER_DEFAULTS["viz_num_examples"],
+        help="Number of scenes to visualize (fixed default unless overridden).",
+    )
+    parser.add_argument(
+        "--viz_num_samples",
+        type=int,
+        default=USER_DEFAULTS["viz_num_samples"],
+        help="Number of predicted samples per scene (fixed default unless overridden).",
+    )
+    parser.add_argument("--sampling", default=USER_DEFAULTS["sampling"], help="Override sampling method (ddpm/ddim)")
     parser.add_argument(
         "--viz_epoch_tag",
         type=int,
-        default=None,
+        default=USER_DEFAULTS["viz_epoch_tag"],
         help="Epoch tag used in output folder name epoch_XXXX (default: checkpoint epoch)",
     )
     return parser.parse_args()
 
 
+def _extract_epoch_from_ckpt_name(ckpt_name: str) -> Optional[int]:
+    m = re.search(r"_epoch(\d+)\.pt$", ckpt_name)
+    if m is None:
+        return None
+    return int(m.group(1))
+
+
+def _ckpt_sort_key(path: Path):
+    # Prefer larger epoch numbers when available; otherwise fall back to mtime.
+    epoch = _extract_epoch_from_ckpt_name(path.name)
+    if epoch is None:
+        return (0, -1, path.stat().st_mtime)
+    return (1, epoch, path.stat().st_mtime)
+
+
 def _list_checkpoints(exp_dir: Path):
-    ckpts = sorted(exp_dir.glob("*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    ckpts = sorted(exp_dir.glob("*.pt"), key=_ckpt_sort_key, reverse=True)
     return ckpts
 
 
@@ -70,11 +123,11 @@ def _find_checkpoint_dirs():
     return sorted(dirs, key=lambda p: str(p))
 
 
-def _resolve_exp_dir_with_fallback(exp_dir: Path):
-    if exp_dir.exists():
-        return exp_dir.resolve(), None
-    exp_dir.mkdir(parents=True, exist_ok=True)
-    return exp_dir.resolve(), f"[Info] exp_dir did not exist. Created: {exp_dir.resolve()}"
+def _ensure_output_dir(output_dir: Path):
+    if output_dir.exists():
+        return output_dir.resolve(), None
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir.resolve(), f"[Info] output_dir did not exist. Created: {output_dir.resolve()}"
 
 
 def _extract_dataset_epoch_from_name(ckpt_name: str):
@@ -85,11 +138,9 @@ def _extract_dataset_epoch_from_name(ckpt_name: str):
 
 
 def _resolve_checkpoint(args):
-    exp_dir = Path(args.exp_dir)
-    exp_dir, msg = _resolve_exp_dir_with_fallback(exp_dir)
-    if msg:
-        print(msg)
-    if exp_dir is None:
+    ckpt_dir = Path(args.ckpt_dir).resolve()
+    if not ckpt_dir.exists():
+        print(f"[Warn] ckpt_dir does not exist: {ckpt_dir}")
         print("[Info] Available checkpoint directories:")
         ckpt_dirs = _find_checkpoint_dirs()
         if len(ckpt_dirs) == 0:
@@ -100,14 +151,14 @@ def _resolve_checkpoint(args):
             if len(ckpt_dirs) > 20:
                 print(f"  ... and {len(ckpt_dirs) - 20} more")
         return None
-    args.exp_dir = str(exp_dir)
+    args.ckpt_dir = str(ckpt_dir)
 
     if args.ckpt:
         ckpt_path = Path(args.ckpt)
         if ckpt_path.is_absolute():
             ckpt_path = ckpt_path.resolve()
         else:
-            cand_in_exp = (exp_dir / ckpt_path).resolve()
+            cand_in_exp = (ckpt_dir / ckpt_path).resolve()
             cand_local = ckpt_path.resolve()
             if cand_in_exp.exists():
                 ckpt_path = cand_in_exp
@@ -131,12 +182,12 @@ def _resolve_checkpoint(args):
             return None
         return ckpt_path
 
-    ckpts = _list_checkpoints(exp_dir)
+    ckpts = _list_checkpoints(ckpt_dir)
     if len(ckpts) == 0:
         # Also allow checkpoints nested under subdirectories.
-        ckpts = sorted(exp_dir.rglob("*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+        ckpts = sorted(ckpt_dir.rglob("*.pt"), key=_ckpt_sort_key, reverse=True)
     if len(ckpts) == 0:
-        print(f"[Warn] No .pt checkpoints found under: {exp_dir}")
+        print(f"[Warn] No .pt checkpoints found under: {ckpt_dir}")
         print("[Info] Available checkpoint directories:")
         ckpt_dirs = _find_checkpoint_dirs()
         if len(ckpt_dirs) == 0:
@@ -149,10 +200,12 @@ def _resolve_checkpoint(args):
         return None
 
     if args.list_ckpts:
-        print(f"[Checkpoints] {exp_dir}")
+        print(f"[Checkpoints] {ckpt_dir}")
         for idx, ckpt in enumerate(ckpts):
             mtime = ckpt.stat().st_mtime
-            print(f"{idx:>2}: {ckpt.name}  (mtime={mtime:.0f})")
+            epoch = _extract_epoch_from_ckpt_name(ckpt.name)
+            epoch_txt = f"epoch={epoch}" if epoch is not None else "epoch=?"
+            print(f"{idx:>2}: {ckpt.name}  ({epoch_txt}, mtime={mtime:.0f})")
         return None
 
     if args.ckpt_index is not None:
@@ -172,10 +225,13 @@ def _build_config(args, ckpt_path: Path):
     if cfg is None:
         cfg = {}
 
-    exp_dir = Path(args.exp_dir).resolve()
+    output_dir = Path(args.output_dir)
+    output_dir, msg = _ensure_output_dir(output_dir)
+    if msg:
+        print(msg)
     # MID builds model_dir via os.path.join('./experiments', exp_name).
-    # Using an absolute exp_name makes model_dir resolve to the absolute exp_dir path.
-    exp_name = str(exp_dir)
+    # Using an absolute exp_name makes model_dir resolve to the absolute output_dir path.
+    exp_name = str(output_dir)
 
     ckpt_dataset, ckpt_epoch = _extract_dataset_epoch_from_name(ckpt_path.name)
     if ckpt_epoch is None:
@@ -200,17 +256,22 @@ def _build_config(args, ckpt_path: Path):
     if args.sampling:
         cfg["sampling"] = args.sampling
 
-    return EasyDict(cfg), int(ckpt_epoch), exp_dir
+    return EasyDict(cfg), int(ckpt_epoch), output_dir
 
 
 def main():
     args = parse_args()
 
+    if args.exp_dir:
+        # Legacy behavior: one directory used for both checkpoint lookup and output.
+        args.ckpt_dir = args.exp_dir
+        args.output_dir = args.exp_dir
+
     ckpt_path = _resolve_checkpoint(args)
     if ckpt_path is None:
         return
 
-    config, ckpt_epoch, exp_dir = _build_config(args, ckpt_path)
+    config, ckpt_epoch, output_dir = _build_config(args, ckpt_path)
 
     # Reproducible random scene/timestep selection in visualization.
     np.random.seed(args.seed)
@@ -219,16 +280,17 @@ def main():
     print(f"[Info] Config: {args.config}")
     print(f"[Info] Checkpoint: {ckpt_path}")
     print(f"[Info] Dataset: {config.dataset}")
-    print(f"[Info] Exp dir: {exp_dir}")
+    print(f"[Info] Checkpoint dir: {args.ckpt_dir}")
+    print(f"[Info] Output dir: {output_dir}")
 
-    expected_ckpt = exp_dir / ckpt_path.name
+    expected_ckpt = output_dir / ckpt_path.name
     if ckpt_path.resolve() != expected_ckpt.resolve():
-        exp_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
         if (not expected_ckpt.exists()) or (expected_ckpt.stat().st_size != ckpt_path.stat().st_size):
             shutil.copy2(str(ckpt_path), str(expected_ckpt))
-            print(f"[Info] Copied checkpoint to exp_dir: {expected_ckpt}")
+            print(f"[Info] Copied checkpoint to output_dir: {expected_ckpt}")
         else:
-            print(f"[Info] Reusing existing checkpoint in exp_dir: {expected_ckpt}")
+            print(f"[Info] Reusing existing checkpoint in output_dir: {expected_ckpt}")
 
     # mid.py imports tensorboardX at module import time.
     # Provide a fallback so visualization can run even if tensorboardX is absent.
@@ -265,8 +327,8 @@ def main():
 
     agent = MID(config)
 
-    # Ensure output goes to the selected exp_dir.
-    agent.model_dir = str(exp_dir)
+    # Ensure output goes to the selected output_dir.
+    agent.model_dir = str(output_dir)
     os.makedirs(agent.model_dir, exist_ok=True)
 
     viz_epoch = int(args.viz_epoch_tag) if args.viz_epoch_tag is not None else int(ckpt_epoch)

@@ -233,6 +233,14 @@ class MID():
         stride=1,
         edge_style="dark",
         overlap_darkening=False,
+        show_center=False,
+        center_color="white",
+        center_size=22.0,
+        show_yaw_arrow=False,
+        yaw_arrow_color="black",
+        yaw_arrow_scale=0.62,
+        yaw_arrow_lw=1.0,
+        yaw_arrow_alpha=0.9,
     ):
         """
         Draw oriented vehicle rectangles at each trajectory point.
@@ -293,6 +301,38 @@ class MID():
             )
             ax.add_patch(patch)
 
+            if show_center:
+                ax.scatter(
+                    [x],
+                    [y],
+                    s=float(center_size),
+                    c=center_color,
+                    edgecolors='black',
+                    linewidths=0.55,
+                    alpha=0.92,
+                    zorder=zorder + 0.20,
+                )
+
+            if show_yaw_arrow:
+                arrow_len = max(0.15, float(car_length) * float(yaw_arrow_scale))
+                dx = float(np.cos(yaw)) * arrow_len
+                dy = float(np.sin(yaw)) * arrow_len
+                ax.annotate(
+                    "",
+                    xy=(x + dx, y + dy),
+                    xytext=(x, y),
+                    arrowprops=dict(
+                        arrowstyle='-|>',
+                        lw=float(yaw_arrow_lw),
+                        color=yaw_arrow_color,
+                        alpha=float(np.clip(yaw_arrow_alpha, 0.0, 1.0)),
+                        shrinkA=0,
+                        shrinkB=0,
+                        mutation_scale=9.0,
+                    ),
+                    zorder=zorder + 0.25,
+                )
+
     @staticmethod
     def _vehicle_box_corners(center_xy, yaw, car_length, car_width):
         half_l = 0.5 * float(car_length)
@@ -333,7 +373,171 @@ class MID():
                 return False
         return True
 
-    def _find_first_collision_timestep(
+    @staticmethod
+    def _polygon_signed_area(poly):
+        poly = np.asarray(poly, dtype=np.float32).reshape(-1, 2)
+        if poly.shape[0] < 3:
+            return 0.0
+        x = poly[:, 0]
+        y = poly[:, 1]
+        return 0.5 * float(np.sum(x * np.roll(y, -1) - y * np.roll(x, -1)))
+
+    @staticmethod
+    def _polygon_centroid(poly, eps=1e-6):
+        poly = np.asarray(poly, dtype=np.float32).reshape(-1, 2)
+        if poly.shape[0] == 0:
+            return None
+        if poly.shape[0] < 3:
+            return np.mean(poly, axis=0)
+
+        area2 = 0.0
+        cx = 0.0
+        cy = 0.0
+        for i in range(poly.shape[0]):
+            j = (i + 1) % poly.shape[0]
+            cross = float(poly[i, 0] * poly[j, 1] - poly[j, 0] * poly[i, 1])
+            area2 += cross
+            cx += (float(poly[i, 0]) + float(poly[j, 0])) * cross
+            cy += (float(poly[i, 1]) + float(poly[j, 1])) * cross
+
+        if abs(area2) <= eps:
+            return np.mean(poly, axis=0)
+        return np.array([cx / (3.0 * area2), cy / (3.0 * area2)], dtype=np.float32)
+
+    @classmethod
+    def _ensure_ccw(cls, poly):
+        poly = np.asarray(poly, dtype=np.float32).reshape(-1, 2)
+        if poly.shape[0] < 3:
+            return poly
+        if cls._polygon_signed_area(poly) < 0:
+            return poly[::-1].copy()
+        return poly
+
+    @staticmethod
+    def _line_intersection(p1, p2, q1, q2, eps=1e-6):
+        p1 = np.asarray(p1, dtype=np.float32).reshape(2)
+        p2 = np.asarray(p2, dtype=np.float32).reshape(2)
+        q1 = np.asarray(q1, dtype=np.float32).reshape(2)
+        q2 = np.asarray(q2, dtype=np.float32).reshape(2)
+
+        r = p2 - p1
+        s = q2 - q1
+        den = float(r[0] * s[1] - r[1] * s[0])
+        if abs(den) <= eps:
+            return 0.5 * (p2 + q1)
+
+        t = float((q1[0] - p1[0]) * s[1] - (q1[1] - p1[1]) * s[0]) / den
+        return p1 + t * r
+
+    @staticmethod
+    def _inside_half_plane(point, edge_start, edge_end, eps=1e-6):
+        point = np.asarray(point, dtype=np.float32).reshape(2)
+        edge_start = np.asarray(edge_start, dtype=np.float32).reshape(2)
+        edge_end = np.asarray(edge_end, dtype=np.float32).reshape(2)
+        edge = edge_end - edge_start
+        rel = point - edge_start
+        cross = float(edge[0] * rel[1] - edge[1] * rel[0])
+        return cross >= -eps
+
+    @classmethod
+    def _convex_polygon_intersection(cls, subject_poly, clip_poly, eps=1e-6):
+        subject = cls._ensure_ccw(subject_poly)
+        clip = cls._ensure_ccw(clip_poly)
+        if subject.shape[0] == 0 or clip.shape[0] == 0:
+            return np.zeros((0, 2), dtype=np.float32)
+
+        output = subject.copy()
+        for i in range(clip.shape[0]):
+            cp1 = clip[i]
+            cp2 = clip[(i + 1) % clip.shape[0]]
+            input_list = output
+            if input_list.shape[0] == 0:
+                break
+
+            out_points = []
+            s = input_list[-1]
+            for e in input_list:
+                inside_e = cls._inside_half_plane(e, cp1, cp2, eps=eps)
+                inside_s = cls._inside_half_plane(s, cp1, cp2, eps=eps)
+                if inside_e:
+                    if not inside_s:
+                        out_points.append(cls._line_intersection(s, e, cp1, cp2, eps=eps))
+                    out_points.append(e)
+                elif inside_s:
+                    out_points.append(cls._line_intersection(s, e, cp1, cp2, eps=eps))
+                s = e
+
+            if len(out_points) == 0:
+                output = np.zeros((0, 2), dtype=np.float32)
+                break
+
+            output = np.asarray(out_points, dtype=np.float32).reshape(-1, 2)
+            dedup = [output[0]]
+            for p in output[1:]:
+                if np.linalg.norm(p - dedup[-1]) > eps:
+                    dedup.append(p)
+            if len(dedup) > 1 and np.linalg.norm(dedup[0] - dedup[-1]) <= eps:
+                dedup.pop()
+            output = np.asarray(dedup, dtype=np.float32).reshape(-1, 2)
+
+        return output
+
+    @classmethod
+    def _contact_point_from_overlap(cls, corners_a, corners_b, eps=1e-6):
+        corners_a = np.asarray(corners_a, dtype=np.float32).reshape(4, 2)
+        corners_b = np.asarray(corners_b, dtype=np.float32).reshape(4, 2)
+
+        overlap_poly = cls._convex_polygon_intersection(corners_a, corners_b, eps=eps)
+        if overlap_poly.shape[0] >= 1:
+            centroid = cls._polygon_centroid(overlap_poly, eps=eps)
+            if centroid is not None:
+                return np.asarray(centroid, dtype=np.float32), overlap_poly
+
+        # Numerical fallback.
+        center_a = np.mean(corners_a, axis=0)
+        center_b = np.mean(corners_b, axis=0)
+        return 0.5 * (center_a + center_b), overlap_poly
+
+    def _estimate_collision_mode_from_overlap(
+        self,
+        ego_center_xy,
+        ego_yaw,
+        ego_corners,
+        opp_corners,
+        car_length,
+        car_width,
+        eps=1e-6,
+    ):
+        ego_center = np.asarray(ego_center_xy, dtype=np.float32).reshape(2)
+        contact_world, overlap_poly = self._contact_point_from_overlap(ego_corners, opp_corners, eps=eps)
+        if contact_world is None:
+            return None, None, None, overlap_poly
+
+        c = np.cos(float(ego_yaw))
+        s = np.sin(float(ego_yaw))
+        rot_t = np.array([[c, s], [-s, c]], dtype=np.float32)  # R^T
+        contact_local = rot_t @ (np.asarray(contact_world, dtype=np.float32).reshape(2) - ego_center)
+
+        half_l = 0.5 * float(car_length)
+        half_w = 0.5 * float(car_width)
+        contact_local[0] = np.clip(contact_local[0], -half_l, half_l)
+        contact_local[1] = np.clip(contact_local[1], -half_w, half_w)
+
+        valid_modes = (11, 12, 13, 21, 23, 31, 33, 41, 43, 51, 52, 53)
+        best_mode = None
+        best_dist = None
+        for mode in valid_modes:
+            pt = self._collision_mode_local_point(mode, car_length, car_width)
+            if pt is None:
+                continue
+            d2 = float(np.sum((pt - contact_local) ** 2))
+            if (best_dist is None) or (d2 < best_dist):
+                best_dist = d2
+                best_mode = int(mode)
+
+        return best_mode, np.asarray(contact_world, dtype=np.float32), np.asarray(contact_local, dtype=np.float32), overlap_poly
+
+    def _find_first_collision_event(
         self,
         traj_a,
         yaws_a,
@@ -354,9 +558,55 @@ class MID():
         for t_idx in range(n):
             box_a = self._vehicle_box_corners(traj_a[t_idx], yaws_a[t_idx], car_length, car_width)
             box_b = self._vehicle_box_corners(traj_b[t_idx], yaws_b[t_idx], car_length, car_width)
-            if self._obb_intersect(box_a, box_b):
-                return t_idx
+            if not self._obb_intersect(box_a, box_b):
+                continue
+
+            mode_id, contact_world, contact_local, overlap_poly = self._estimate_collision_mode_from_overlap(
+                ego_center_xy=traj_a[t_idx],
+                ego_yaw=yaws_a[t_idx],
+                ego_corners=box_a,
+                opp_corners=box_b,
+                car_length=car_length,
+                car_width=car_width,
+            )
+            if mode_id is None:
+                mode_id = self._estimate_collision_mode_from_pair(
+                    ego_center_xy=traj_a[t_idx],
+                    ego_yaw=yaws_a[t_idx],
+                    opp_center_xy=traj_b[t_idx],
+                    car_length=car_length,
+                    car_width=car_width,
+                )
+
+            return {
+                "t_collision": int(t_idx),
+                "mode_id": None if mode_id is None else int(mode_id),
+                "contact_world": contact_world,
+                "contact_local": contact_local,
+                "overlap_poly": overlap_poly,
+            }
         return None
+
+    def _find_first_collision_timestep(
+        self,
+        traj_a,
+        yaws_a,
+        traj_b,
+        yaws_b,
+        car_length,
+        car_width,
+    ):
+        event = self._find_first_collision_event(
+            traj_a=traj_a,
+            yaws_a=yaws_a,
+            traj_b=traj_b,
+            yaws_b=yaws_b,
+            car_length=car_length,
+            car_width=car_width,
+        )
+        if event is None:
+            return None
+        return int(event["t_collision"])
 
     @staticmethod
     def _collision_mode_local_point(mode_id, car_length, car_width):
@@ -702,6 +952,9 @@ class MID():
         car_length = float(getattr(self.config, "car_length", 4.650))
         draw_vehicle_boxes = bool(getattr(self.config, "viz_vehicle_boxes_enabled", True))
         box_stride = max(1, int(getattr(self.config, "viz_vehicle_box_stride", 1)))
+        box_center_enabled = bool(getattr(self.config, "viz_vehicle_box_center_enabled", True))
+        box_yaw_arrow_enabled = bool(getattr(self.config, "viz_vehicle_box_yaw_arrow_enabled", True))
+        box_yaw_arrow_scale = float(getattr(self.config, "viz_vehicle_box_yaw_arrow_scale", 0.2))
         viz_collision_mode_guidance = bool(getattr(self.config, "viz_collision_mode_guidance_enabled", False))
         viz_collision_mode_guidance_apply_to_ego = bool(
             getattr(self.config, "viz_collision_mode_guidance_apply_to_ego", False)
@@ -999,7 +1252,7 @@ class MID():
                             min_len = min(len(ego_rec["traj"]), len(ego_rec["yaw"]), len(rec["traj"]), len(rec["yaw"]))
                             if min_len <= 0:
                                 continue
-                            t_collision = self._find_first_collision_timestep(
+                            collision = self._find_first_collision_event(
                                 ego_rec["traj"][:min_len],
                                 ego_rec["yaw"][:min_len],
                                 rec["traj"][:min_len],
@@ -1007,19 +1260,27 @@ class MID():
                                 car_length,
                                 car_width,
                             )
+                            t_collision = None if collision is None else int(collision["t_collision"])
                             pair_stats.append(
                                 {
                                     "opp_idx": i,
-                                    "t_collision": None if t_collision is None else int(t_collision),
+                                    "t_collision": t_collision,
+                                    "collision": collision,
                                     "t_last": int(min_len - 1),
                                 }
                             )
 
-                        collided_pairs = [p for p in pair_stats if p["t_collision"] is not None]
+                        collided_pairs = [p for p in pair_stats if p["collision"] is not None]
                         if len(collided_pairs) > 0:
                             # Use one global collision timestep (earliest) so ego/track are aligned in time.
                             first_collision = min(collided_pairs, key=lambda p: p["t_collision"])
-                            collision_event = (first_collision["opp_idx"], first_collision["t_collision"])
+                            collision_event = {
+                                "opp_idx": int(first_collision["opp_idx"]),
+                                "t_collision": int(first_collision["t_collision"]),
+                                "mode_id": first_collision["collision"].get("mode_id", None),
+                                "contact_world": first_collision["collision"].get("contact_world", None),
+                                "contact_local": first_collision["collision"].get("contact_local", None),
+                            }
                             t_collision = int(first_collision["t_collision"])
                             draw_t_by_idx[ego_idx] = t_collision
                             draw_t_by_idx[first_collision["opp_idx"]] = t_collision
@@ -1056,22 +1317,28 @@ class MID():
                             stride=1,
                             edge_style="dark",
                             overlap_darkening=False,
+                            show_center=box_center_enabled,
+                            show_yaw_arrow=box_yaw_arrow_enabled,
+                            yaw_arrow_scale=box_yaw_arrow_scale,
                         )
 
                     # Draw ego collision-mode grid highlight when collision is detected.
                     if collision_event is not None:
-                        opp_idx, t_draw = collision_event
+                        opp_idx = int(collision_event["opp_idx"])
+                        t_draw = int(collision_event["t_collision"])
                         ego_rec = representative[ego_idx]
                         opp_rec = representative[opp_idx]
                         t_e = int(np.clip(t_draw, 0, min(len(ego_rec["traj"]), len(ego_rec["yaw"])) - 1))
                         t_o = int(np.clip(t_draw, 0, min(len(opp_rec["traj"]), len(opp_rec["yaw"])) - 1))
-                        inferred_mode = self._estimate_collision_mode_from_pair(
-                            ego_center_xy=ego_rec["traj"][t_e],
-                            ego_yaw=ego_rec["yaw"][t_e],
-                            opp_center_xy=opp_rec["traj"][t_o],
-                            car_length=car_length,
-                            car_width=car_width,
-                        )
+                        inferred_mode = collision_event.get("mode_id", None)
+                        if inferred_mode is None:
+                            inferred_mode = self._estimate_collision_mode_from_pair(
+                                ego_center_xy=ego_rec["traj"][t_e],
+                                ego_yaw=ego_rec["yaw"][t_e],
+                                opp_center_xy=opp_rec["traj"][t_o],
+                                car_length=car_length,
+                                car_width=car_width,
+                            )
                         mode_to_draw = int(inferred_mode) if inferred_mode is not None else int(viz_collision_mode_id)
                         _ = self._draw_collision_mode_grid(
                             ax=ax,
@@ -1087,6 +1354,20 @@ class MID():
                             grid_linewidth=0.55,
                             zorder=6.1,
                         )
+
+                        contact_world = collision_event.get("contact_world", None)
+                        if contact_world is not None:
+                            contact_world = np.asarray(contact_world, dtype=np.float32).reshape(-1)
+                            if contact_world.size >= 2 and np.isfinite(contact_world[:2]).all():
+                                ax.scatter(
+                                    [float(contact_world[0])],
+                                    [float(contact_world[1])],
+                                    s=24,
+                                    c="#ff2d2d",
+                                    edgecolors="white",
+                                    linewidths=0.7,
+                                    zorder=6.35,
+                                )
 
                         ego_label = role_labels.get(ego_rec["node"], f"ID {ego_rec['node'].id}")
                         opp_label = role_labels.get(opp_rec["node"], f"ID {opp_rec['node'].id}")

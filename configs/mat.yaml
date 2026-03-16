@@ -4,8 +4,8 @@ car_length: 4.650
 # mat data sampling time
 data_dt: 0.02
 # optional second-based horizon config (converted to steps by data_dt)
-history_sec: 0.7
-prediction_sec: 1.3
+history_sec: 0.6
+prediction_sec: 0.9
 
 # Training 
 save_pt_every: 1
@@ -13,6 +13,9 @@ viz_enabled: True
 viz_num_examples: 30
 viz_num_samples: 1
 viz_vehicle_boxes_enabled: True
+viz_vehicle_box_center_enabled: True
+viz_vehicle_box_yaw_arrow_enabled: True
+viz_vehicle_box_yaw_arrow_scale: 0.2
 viz_collision_mode_guidance_enabled: False
 viz_collision_mode_guidance_mode: 11
 viz_collision_mode_guidance_apply_to_ego: False

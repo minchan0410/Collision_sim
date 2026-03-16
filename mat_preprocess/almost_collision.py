@@ -313,9 +313,9 @@ def main() -> None:
     )
     parser.add_argument("--csv", default="mat_preprocess/mat_txt/all_002/manifest.csv", help="Manifest CSV path.")
     parser.add_argument("--txt-root", default="mat_preprocess/mat_txt/all_002", help="Root folder for input TXT files.")
-    parser.add_argument("--out-dir", default="mat_preprocess/mat_txt/collision_extract_002", help="Output folder.")
+    parser.add_argument("--out-dir", default="mat_preprocess/mat_txt/collision_002", help="Output folder.")
     parser.add_argument("--threshold-m", type=float, default=3.0, help="Near-collision threshold in meters (used only when no collision is found).")
-    parser.add_argument("--before-sec", type=float, default=2.0, help="Window seconds before anchor point.")
+    parser.add_argument("--before-sec", type=float, default=1.5, help="Window seconds before anchor point.")
     parser.add_argument("--after-sec", type=float, default=0.1, help="Window seconds after anchor point.")
     parser.add_argument("--min-movement-m", type=float, default=2.0, help="Minimum movement distance per track in window.")
     # 후륜축 보정을 위한 인자 추가
