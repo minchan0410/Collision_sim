@@ -1,5 +1,6 @@
 import os
 import argparse
+import csv
 import torch
 import dill
 import pdb
@@ -221,8 +222,85 @@ class MID():
         yaws[-1] = prev_yaw
         return yaws
 
+    @staticmethod
+    def _write_scene_traj_csv(csv_path, node_viz_data):
+        """
+        Save one CSV per scene visualization.
+        Row order:
+        1) input + gt (sample_idx=0)
+        2) input + generated sample trajectories (sample_idx=1..N)
+        """
+        fieldnames = [
+            "agent_index",
+            "agent_id",
+            "role",
+            "trajectory_type",
+            "sample_idx",
+            "point_idx",
+            "x",
+            "y",
+        ]
+        rows = []
+
+        for agent_index, rec in enumerate(node_viz_data):
+            node = rec.get("node", None)
+            agent_id = str(getattr(node, "id", agent_index))
+            role = str(rec.get("role_label", f"ID {agent_id}"))
+
+            history = np.asarray(rec.get("history", []), dtype=np.float32)
+            future = np.asarray(rec.get("future", []), dtype=np.float32)
+            if history.ndim != 2 or history.shape[0] == 0 or history.shape[1] < 2:
+                continue
+
+            history_xy = history[:, :2]
+            if future.ndim == 2 and future.shape[0] > 0 and future.shape[1] >= 2:
+                gt_concat = np.vstack((history_xy, future[:, :2]))
+                for point_idx, point in enumerate(gt_concat):
+                    rows.append(
+                        {
+                            "agent_index": int(agent_index),
+                            "agent_id": agent_id,
+                            "role": role,
+                            "trajectory_type": "input_plus_gt",
+                            "sample_idx": 0,
+                            "point_idx": int(point_idx),
+                            "x": float(point[0]),
+                            "y": float(point[1]),
+                        }
+                    )
+
+            predictions = rec.get("predictions", None)
+            draw_prediction_paths = bool(rec.get("draw_prediction_paths", False))
+            if draw_prediction_paths and predictions is not None:
+                pred_arr = np.asarray(predictions, dtype=np.float32)
+                if pred_arr.ndim == 3 and pred_arr.shape[2] >= 2:
+                    for sample_idx, pred_future in enumerate(pred_arr, start=1):
+                        pred_concat = np.vstack((history_xy, pred_future[:, :2]))
+                        for point_idx, point in enumerate(pred_concat):
+                            rows.append(
+                                {
+                                    "agent_index": int(agent_index),
+                                    "agent_id": agent_id,
+                                    "role": role,
+                                    "trajectory_type": "input_plus_pred",
+                                    "sample_idx": int(sample_idx),
+                                    "point_idx": int(point_idx),
+                                    "x": float(point[0]),
+                                    "y": float(point[1]),
+                                }
+                            )
+
+        os.makedirs(osp.dirname(csv_path), exist_ok=True)
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            if len(rows) > 0:
+                writer.writerows(rows)
+
     def _build_collision_guidance_override(self, reference_future_xy):
-        if not bool(getattr(self.config, "collision_guidance_enabled", False)):
+        collision_enabled = bool(getattr(self.config, "collision_guidance_enabled", False))
+        not_collision_enabled = bool(getattr(self.config, "not_collision_guidance_enabled", False))
+        if (not collision_enabled) and (not not_collision_enabled):
             return None
 
         if reference_future_xy is None:
@@ -233,7 +311,8 @@ class MID():
             return None
 
         return {
-            "collision_enabled": True,
+            "collision_enabled": collision_enabled,
+            "not_collision_enabled": not_collision_enabled,
             "collision_reference_positions": ref,
         }
 
@@ -978,6 +1057,9 @@ class MID():
         if viz_predict_agents not in (1, 2):
             viz_predict_agents = 2
         predict_target_only = (viz_predict_agents == 1)
+        viz_csv_dir = str(getattr(self.config, "viz_csv_dir", "") or "").strip()
+        if viz_csv_dir != "":
+            os.makedirs(viz_csv_dir, exist_ok=True)
 
         ph = self.ph
         min_hl = self.min_hl
@@ -1184,11 +1266,17 @@ class MID():
                     zorder=4,
                 )
 
+                display_label = role_labels.get(node, f"ID {node.id}")
                 node_viz_data.append(
                     {
                         "node": node,
+                        "role_label": display_label,
                         "colors": colors,
                         "pred_items": pred_items,
+                        "history": np.asarray(history, dtype=np.float32),
+                        "future": np.asarray(future, dtype=np.float32),
+                        "predictions": None if predictions is None else np.asarray(predictions, dtype=np.float32),
+                        "draw_prediction_paths": bool(draw_prediction_paths),
                     }
                 )
 
@@ -1201,8 +1289,6 @@ class MID():
                     linewidths=1.5,
                     zorder=5
                 )
-
-                display_label = role_labels.get(node, f"ID {node.id}")
 
                 ax.text(
                     history[-1, 0] + 2,
@@ -1420,6 +1506,10 @@ class MID():
                 f"scene_{scene_order:02d}_idx_{int(scene_idx):04d}_{safe_scene_name}_t_{t}.png"
             )
             fig.savefig(out_file, dpi=200, bbox_inches='tight')
+            if viz_csv_dir != "":
+                csv_name = osp.splitext(osp.basename(out_file))[0] + ".csv"
+                csv_path = osp.join(viz_csv_dir, csv_name)
+                self._write_scene_traj_csv(csv_path, node_viz_data)
             plt.close(fig)
 
             print(f"  -> Saved: {out_file}")

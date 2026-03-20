@@ -25,7 +25,8 @@ class AutoEncoder(Module):
     def _build_dynamics_guidance(self, dynamics, velocity_std):
         dynamics_enabled = bool(getattr(self.config, "dynamics_guidance_enabled", False))
         collision_enabled = bool(getattr(self.config, "collision_guidance_enabled", False))
-        guidance_enabled = dynamics_enabled or collision_enabled
+        not_collision_enabled = bool(getattr(self.config, "not_collision_guidance_enabled", False))
+        guidance_enabled = dynamics_enabled or collision_enabled or not_collision_enabled
         if not guidance_enabled:
             return {"enabled": False}
 
@@ -42,11 +43,18 @@ class AutoEncoder(Module):
             guidance_inner_steps = int(getattr(self.config, "dynamics_guidance_inner_steps", 1))
             guidance_max_grad_norm = float(getattr(self.config, "dynamics_guidance_max_grad_norm", 1.5))
         else:
-            # Allow collision-only guidance even when dynamics_guidance_enabled=False.
-            guidance_scale = float(getattr(self.config, "collision_guidance_sampling_scale", 0.12))
-            guidance_start_ratio = float(getattr(self.config, "collision_guidance_start_ratio", 0.0))
-            guidance_inner_steps = int(getattr(self.config, "collision_guidance_inner_steps", 1))
-            guidance_max_grad_norm = float(getattr(self.config, "collision_guidance_max_grad_norm", 6.0))
+            # Allow interaction-only guidance even when dynamics_guidance_enabled=False.
+            # If both are enabled, prioritize not-collision guidance to avoid conflicting objectives.
+            if not_collision_enabled:
+                guidance_scale = float(getattr(self.config, "not_collision_guidance_sampling_scale", 0.12))
+                guidance_start_ratio = float(getattr(self.config, "not_collision_guidance_start_ratio", 0.0))
+                guidance_inner_steps = int(getattr(self.config, "not_collision_guidance_inner_steps", 1))
+                guidance_max_grad_norm = float(getattr(self.config, "not_collision_guidance_max_grad_norm", 6.0))
+            else:
+                guidance_scale = float(getattr(self.config, "collision_guidance_sampling_scale", 0.12))
+                guidance_start_ratio = float(getattr(self.config, "collision_guidance_start_ratio", 0.0))
+                guidance_inner_steps = int(getattr(self.config, "collision_guidance_inner_steps", 1))
+                guidance_max_grad_norm = float(getattr(self.config, "collision_guidance_max_grad_norm", 6.0))
 
         return {
             "enabled": True,
@@ -82,7 +90,9 @@ class AutoEncoder(Module):
             "low_speed_yaw_weight": dyn_w * float(getattr(self.config, "dynamics_guidance_low_speed_yaw_weight", 0.6)),
             "low_speed_yaw_threshold": float(getattr(self.config, "dynamics_guidance_low_speed_yaw_threshold", 0.3)),
             # Optional collision guidance (active only when reference trajectory is provided).
-            "collision_enabled": bool(getattr(self.config, "collision_guidance_enabled", False)),
+            # If not-collision guidance is enabled, collision guidance is disabled to avoid conflicts.
+            "collision_enabled": bool(getattr(self.config, "collision_guidance_enabled", False))
+                                and not bool(getattr(self.config, "not_collision_guidance_enabled", False)),
             "collision_weight_close": float(getattr(self.config, "collision_guidance_weight_close", 1.0)),
             "collision_weight_hit": float(getattr(self.config, "collision_guidance_weight_hit", 1.2)),
             "collision_close_dist": float(getattr(self.config, "collision_guidance_close_dist", 1.4)),
@@ -94,6 +104,19 @@ class AutoEncoder(Module):
             "collision_scale_jitter": float(getattr(self.config, "collision_guidance_scale_jitter", 0.0)),
             "collision_target_dist_jitter": float(getattr(self.config, "collision_guidance_target_dist_jitter", 0.0)),
             "collision_close_dist_jitter": float(getattr(self.config, "collision_guidance_close_dist_jitter", 0.0)),
+            # Optional not-collision guidance (active only when reference trajectory is provided).
+            "not_collision_enabled": bool(getattr(self.config, "not_collision_guidance_enabled", False)),
+            "not_collision_weight_away": float(getattr(self.config, "not_collision_guidance_weight_away", 1.0)),
+            "not_collision_weight_clear": float(getattr(self.config, "not_collision_guidance_weight_clear", 1.2)),
+            "not_collision_away_dist": float(getattr(self.config, "not_collision_guidance_away_dist", 1.4)),
+            "not_collision_target_dist": float(getattr(self.config, "not_collision_guidance_target_dist", 2.0)),
+            "not_collision_focus_ratio": float(getattr(self.config, "not_collision_guidance_focus_ratio", 0.6)),
+            "not_collision_softmin_temp": float(getattr(self.config, "not_collision_guidance_softmin_temp", 0.25)),
+            "not_collision_scale": float(getattr(self.config, "not_collision_guidance_global_scale", 1.0)),
+            # Diversity knobs for not-collision-guided sampling.
+            "not_collision_scale_jitter": float(getattr(self.config, "not_collision_guidance_scale_jitter", 0.0)),
+            "not_collision_target_dist_jitter": float(getattr(self.config, "not_collision_guidance_target_dist_jitter", 0.0)),
+            "not_collision_away_dist_jitter": float(getattr(self.config, "not_collision_guidance_away_dist_jitter", 0.0)),
             "xT_temperature": float(getattr(self.config, "sampling_xt_temperature", 1.0)),
         }
 

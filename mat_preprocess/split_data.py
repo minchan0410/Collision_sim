@@ -89,14 +89,14 @@ def split_dataset(train_ratio, val_ratio, test_ratio, suffix, use_ratio, seed, s
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="텍스트 데이터셋을 train/val/test로 분할합니다.")
-    parser.add_argument('--train', type=float, default=8, help='Train 세트 비율')
-    parser.add_argument('--val', type=float, default=1, help='Validation 세트 비율')
-    parser.add_argument('--test', type=float, default=1, help='Test 세트 비율')
+    parser.add_argument('--train', type=float, default=0, help='Train 세트 비율')
+    parser.add_argument('--val', type=float, default=0, help='Validation 세트 비율')
+    parser.add_argument('--test', type=float, default=10, help='Test 세트 비율')
     parser.add_argument('--suffix', type=str, default='', help='폴더명 뒤에 붙일 이름 (예: exp1 입력 시 train_exp1 폴더 생성)')
     parser.add_argument('--use_ratio', type=float, default=1.0, help='사용할 전체 데이터의 비율 (예: 0.1 -> 10%%만 사용)')
     parser.add_argument('--seed', type=int, default=42, help='랜덤 셔플 시드 (실험 재현용)')
     # 새로운 파라미터 추가
-    parser.add_argument('--source', type=str, default='collision_notcol_002', help='분할할 원본 데이터가 있는 폴더명 (기본값: all)')
+    parser.add_argument('--source', type=str, default='collision_yescol_002', help='분할할 원본 데이터가 있는 폴더명 (기본값: all)')
 
     args = parser.parse_args()
     split_dataset(args.train, args.val, args.test, args.suffix, args.use_ratio, args.seed, args.source)

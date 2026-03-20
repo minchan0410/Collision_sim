@@ -143,7 +143,14 @@ class DiffusionTraj(Module):
         return value
 
     def _compute_collision_objective(self, vel_phys, guidance):
-        if not bool(guidance.get("collision_enabled", False)):
+        collision_enabled = bool(guidance.get("collision_enabled", False))
+        not_collision_enabled = bool(guidance.get("not_collision_enabled", False))
+
+        # Avoid conflicting attraction/repulsion terms in the same run.
+        if collision_enabled and not_collision_enabled:
+            collision_enabled = False
+
+        if (not collision_enabled) and (not not_collision_enabled):
             return vel_phys.new_tensor(0.0)
 
         ref_pos = guidance.get("collision_reference_positions", None)
@@ -188,32 +195,63 @@ class DiffusionTraj(Module):
         if dist.numel() == 0:
             return vel_phys.new_tensor(0.0)
 
-        focus_ratio = float(guidance.get("collision_focus_ratio", 0.6))
-        focus_ratio = min(max(focus_ratio, 0.0), 1.0)
-        focus_steps = max(1, int(round(min_len * focus_ratio)))
-        start_idx = max(0, min_len - focus_steps)
-        dist_focus = dist[:, start_idx:]
-
-        close_dist = float(guidance.get("collision_close_dist", 1.5))
-        target_dist = float(guidance.get("collision_target_dist", 0.35))
-        softmin_temp = max(float(guidance.get("collision_softmin_temp", 0.25)), eps)
-        weight_close = float(guidance.get("collision_weight_close", 1.0))
-        weight_hit = float(guidance.get("collision_weight_hit", 1.0))
-
         objective = vel_phys.new_tensor(0.0)
-        if weight_close > 0:
-            close_penalty = F.relu(dist_focus - close_dist).pow(2).mean()
-            objective = objective + (weight_close * close_penalty)
 
-        if weight_hit > 0:
-            softmin_dist = -softmin_temp * torch.logsumexp(-dist_focus / softmin_temp, dim=-1)
-            hit_penalty = F.relu(softmin_dist - target_dist).pow(2).mean()
-            objective = objective + (weight_hit * hit_penalty)
+        if collision_enabled:
+            focus_ratio = float(guidance.get("collision_focus_ratio", 0.6))
+            focus_ratio = min(max(focus_ratio, 0.0), 1.0)
+            focus_steps = max(1, int(round(min_len * focus_ratio)))
+            start_idx = max(0, min_len - focus_steps)
+            dist_focus = dist[:, start_idx:]
 
-        collision_scale = float(guidance.get("collision_scale", 1.0))
-        if collision_scale <= 0:
-            return vel_phys.new_tensor(0.0)
-        return collision_scale * objective
+            close_dist = float(guidance.get("collision_close_dist", 1.5))
+            target_dist = float(guidance.get("collision_target_dist", 0.35))
+            softmin_temp = max(float(guidance.get("collision_softmin_temp", 0.25)), eps)
+            weight_close = float(guidance.get("collision_weight_close", 1.0))
+            weight_hit = float(guidance.get("collision_weight_hit", 1.0))
+
+            col_obj = vel_phys.new_tensor(0.0)
+            if weight_close > 0:
+                close_penalty = F.relu(dist_focus - close_dist).pow(2).mean()
+                col_obj = col_obj + (weight_close * close_penalty)
+
+            if weight_hit > 0:
+                softmin_dist = -softmin_temp * torch.logsumexp(-dist_focus / softmin_temp, dim=-1)
+                hit_penalty = F.relu(softmin_dist - target_dist).pow(2).mean()
+                col_obj = col_obj + (weight_hit * hit_penalty)
+
+            collision_scale = float(guidance.get("collision_scale", 1.0))
+            if collision_scale > 0:
+                objective = objective + collision_scale * col_obj
+
+        if not_collision_enabled:
+            focus_ratio_nc = float(guidance.get("not_collision_focus_ratio", 0.6))
+            focus_ratio_nc = min(max(focus_ratio_nc, 0.0), 1.0)
+            focus_steps_nc = max(1, int(round(min_len * focus_ratio_nc)))
+            start_idx_nc = max(0, min_len - focus_steps_nc)
+            dist_focus_nc = dist[:, start_idx_nc:]
+
+            away_dist = float(guidance.get("not_collision_away_dist", 1.4))
+            target_dist_nc = float(guidance.get("not_collision_target_dist", 2.0))
+            softmin_temp_nc = max(float(guidance.get("not_collision_softmin_temp", 0.25)), eps)
+            weight_away = float(guidance.get("not_collision_weight_away", 1.0))
+            weight_clear = float(guidance.get("not_collision_weight_clear", 1.2))
+
+            not_col_obj = vel_phys.new_tensor(0.0)
+            if weight_away > 0:
+                away_penalty = F.relu(away_dist - dist_focus_nc).pow(2).mean()
+                not_col_obj = not_col_obj + (weight_away * away_penalty)
+
+            if weight_clear > 0:
+                softmin_dist_nc = -softmin_temp_nc * torch.logsumexp(-dist_focus_nc / softmin_temp_nc, dim=-1)
+                clear_penalty = F.relu(target_dist_nc - softmin_dist_nc).pow(2).mean()
+                not_col_obj = not_col_obj + (weight_clear * clear_penalty)
+
+            not_collision_scale = float(guidance.get("not_collision_scale", 1.0))
+            if not_collision_scale > 0:
+                objective = objective + not_collision_scale * not_col_obj
+
+        return objective
 
     def _compute_dynamics_objective(self, vel_phys, guidance):
         eps = float(guidance.get("eps", 1e-6))
@@ -239,16 +277,16 @@ class DiffusionTraj(Module):
         low_speed_yaw_threshold = max(float(guidance.get("low_speed_yaw_threshold", min_speed)), eps)
 
         use_bicycle_curvature = bool(guidance.get("use_bicycle_curvature", False))
-        curvature_limit = max_curvature
+        wheelbase = max(float(guidance.get("wheelbase", 0.0)), eps)
+        max_steer_deg = float(guidance.get("max_steer_deg", 32.0))
+        max_steer_rad = abs(max_steer_deg) * (math.pi / 180.0)
+        bicycle_kappa_max = abs(math.tan(max_steer_rad)) / wheelbase
+
         if use_bicycle_curvature:
-            wheelbase = max(float(guidance.get("wheelbase", 0.0)), eps)
-            max_steer_deg = float(guidance.get("max_steer_deg", 32.0))
-            max_steer_rad = abs(max_steer_deg) * (math.pi / 180.0)
-            bicycle_kappa_max = abs(math.tan(max_steer_rad)) / wheelbase
-            if max_curvature > 0:
-                curvature_limit = min(max_curvature, bicycle_kappa_max)
-            else:
-                curvature_limit = bicycle_kappa_max
+            # Bicycle mode: use steering geometry as the primary turn constraint.
+            curvature_limit = bicycle_kappa_max
+        else:
+            curvature_limit = max_curvature
 
         speed = torch.norm(vel_phys, dim=-1).clamp_min(eps)  # [B, T]
         speed_pair = 0.5 * (speed[:, 1:] + speed[:, :-1]) if speed.size(1) > 1 else speed.new_zeros(speed.size(0), 0)
@@ -276,12 +314,15 @@ class DiffusionTraj(Module):
             yaw_rate = torch.abs(yaw_delta) / dt
 
             if weight_yaw_rate > 0:
-                static_yaw_limit = torch.full_like(yaw_rate, max(max_yaw_rate, 0.0))
-                if curvature_limit > 0:
-                    dynamic_yaw_limit = speed_pair * curvature_limit
-                    yaw_limit = torch.minimum(static_yaw_limit, dynamic_yaw_limit)
+                if use_bicycle_curvature and curvature_limit > 0:
+                    yaw_limit = speed_pair * curvature_limit
                 else:
-                    yaw_limit = static_yaw_limit
+                    static_yaw_limit = torch.full_like(yaw_rate, max(max_yaw_rate, 0.0))
+                    if curvature_limit > 0:
+                        dynamic_yaw_limit = speed_pair * curvature_limit
+                        yaw_limit = torch.minimum(static_yaw_limit, dynamic_yaw_limit)
+                    else:
+                        yaw_limit = static_yaw_limit
 
                 # Apply without moving mask so near-stop spin also gets penalized.
                 yaw_violation = F.relu(yaw_rate - yaw_limit).pow(2)
@@ -289,7 +330,13 @@ class DiffusionTraj(Module):
 
             if weight_curvature > 0:
                 curvature = yaw_rate / speed_pair.clamp_min(min_speed)
-                objective = objective + weight_curvature * self._soft_limit_penalty(curvature, curvature_limit, mask=moving_mask)
+                if use_bicycle_curvature:
+                    # Equivalent bicycle steering angle from curvature.
+                    steer_angle = torch.atan(curvature * wheelbase).abs()
+                    steer_violation = F.relu(steer_angle - max_steer_rad).pow(2)
+                    objective = objective + weight_curvature * self._masked_mean(steer_violation, mask=moving_mask)
+                else:
+                    objective = objective + weight_curvature * self._soft_limit_penalty(curvature, curvature_limit, mask=moving_mask)
 
             if weight_lateral_accel > 0:
                 lateral_accel = yaw_rate * speed_pair
@@ -351,26 +398,59 @@ class DiffusionTraj(Module):
         if not isinstance(guidance, dict) or len(guidance) == 0:
             return {}
         g = dict(guidance)
-        if not bool(g.get("collision_enabled", False)):
+
+        collision_enabled = bool(g.get("collision_enabled", False))
+        not_collision_enabled = bool(g.get("not_collision_enabled", False))
+        if collision_enabled and not_collision_enabled:
+            collision_enabled = False
+            g["collision_enabled"] = False
+
+        if (not collision_enabled) and (not not_collision_enabled):
             return g
 
-        base_collision_scale = float(g.get("collision_scale", 1.0))
-        scale_jitter = max(float(g.get("collision_scale_jitter", 0.0)), 0.0)
-        if scale_jitter > 0:
-            noise = float(torch.randn((), device=device).item()) * scale_jitter
-            g["collision_scale"] = max(base_collision_scale * math.exp(noise), 0.0)
+        if collision_enabled:
+            base_collision_scale = float(g.get("collision_scale", 1.0))
+            scale_jitter = max(float(g.get("collision_scale_jitter", 0.0)), 0.0)
+            if scale_jitter > 0:
+                noise = float(torch.randn((), device=device).item()) * scale_jitter
+                g["collision_scale"] = max(base_collision_scale * math.exp(noise), 0.0)
 
-        target_dist = float(g.get("collision_target_dist", 0.0))
-        target_jitter = max(float(g.get("collision_target_dist_jitter", 0.0)), 0.0)
-        if target_jitter > 0:
-            target_dist = target_dist + float(torch.randn((), device=device).item()) * target_jitter
-            g["collision_target_dist"] = max(target_dist, 0.0)
+            target_dist = float(g.get("collision_target_dist", 0.0))
+            target_jitter = max(float(g.get("collision_target_dist_jitter", 0.0)), 0.0)
+            if target_jitter > 0:
+                target_dist = target_dist + float(torch.randn((), device=device).item()) * target_jitter
+                g["collision_target_dist"] = max(target_dist, 0.0)
 
-        close_dist = float(g.get("collision_close_dist", 0.0))
-        close_jitter = max(float(g.get("collision_close_dist_jitter", 0.0)), 0.0)
-        if close_jitter > 0:
-            close_dist = close_dist + float(torch.randn((), device=device).item()) * close_jitter
-            g["collision_close_dist"] = max(close_dist, 0.0)
+            close_dist = float(g.get("collision_close_dist", 0.0))
+            close_jitter = max(float(g.get("collision_close_dist_jitter", 0.0)), 0.0)
+            if close_jitter > 0:
+                close_dist = close_dist + float(torch.randn((), device=device).item()) * close_jitter
+                g["collision_close_dist"] = max(close_dist, 0.0)
+
+        if not_collision_enabled:
+            base_not_collision_scale = float(g.get("not_collision_scale", 1.0))
+            nc_scale_jitter = max(float(g.get("not_collision_scale_jitter", 0.0)), 0.0)
+            if nc_scale_jitter > 0:
+                noise = float(torch.randn((), device=device).item()) * nc_scale_jitter
+                g["not_collision_scale"] = max(base_not_collision_scale * math.exp(noise), 0.0)
+
+            not_collision_target = float(g.get("not_collision_target_dist", 0.0))
+            not_collision_target_jitter = max(float(g.get("not_collision_target_dist_jitter", 0.0)), 0.0)
+            if not_collision_target_jitter > 0:
+                not_collision_target = (
+                    not_collision_target
+                    + float(torch.randn((), device=device).item()) * not_collision_target_jitter
+                )
+                g["not_collision_target_dist"] = max(not_collision_target, 0.0)
+
+            not_collision_away = float(g.get("not_collision_away_dist", 0.0))
+            not_collision_away_jitter = max(float(g.get("not_collision_away_dist_jitter", 0.0)), 0.0)
+            if not_collision_away_jitter > 0:
+                not_collision_away = (
+                    not_collision_away
+                    + float(torch.randn((), device=device).item()) * not_collision_away_jitter
+                )
+                g["not_collision_away_dist"] = max(not_collision_away, 0.0)
 
         return g
 

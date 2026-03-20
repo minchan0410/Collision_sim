@@ -318,6 +318,7 @@ def _write_try_param_log(
     pref_sections = [
         "dynamics_guidance_",
         "collision_guidance_",
+        "not_collision_guidance_",
         "viz_vehicle_box_",
         "yaw_loss_",
         "bicycle_rollout_",
@@ -373,6 +374,11 @@ def main():
     print(f"[Info] Checkpoint dir: {runtime.ckpt_dir}")
     print(f"[Info] Output dir: {output_dir}")
     expected_mid_ckpt = _build_mid_expected_ckpt_path(output_dir, config.dataset, ckpt_epoch)
+    img_dir = (output_dir / "img").resolve()
+    csv_dir = (output_dir / "csv").resolve()
+    img_dir.mkdir(parents=True, exist_ok=True)
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    config["viz_csv_dir"] = str(csv_dir)
 
     # Disable tensorboard/event logs in visualization-only runs.
     _install_tensorboard_noop()
@@ -414,7 +420,7 @@ def main():
     figure_cls = None
     original_savefig = None
     try:
-        figure_cls, original_savefig, patched_savefig = _build_savefig_redirect(output_dir)
+        figure_cls, original_savefig, patched_savefig = _build_savefig_redirect(img_dir)
         figure_cls.savefig = patched_savefig
         print("[Info] Visualization started...")
         agent._visualize_epoch(viz_epoch)
@@ -426,7 +432,7 @@ def main():
         if figure_cls is not None and original_savefig is not None:
             figure_cls.savefig = original_savefig
         _cleanup_mid_viz_dirs(Path(agent.model_dir))
-        final_image_count = len(list(output_dir.glob("*.png")))
+        final_image_count = len(list(img_dir.glob("*.png")))
         _write_try_param_log(
             try_dir=output_dir,
             runtime=runtime,

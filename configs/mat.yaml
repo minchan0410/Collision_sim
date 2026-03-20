@@ -85,6 +85,26 @@ collision_guidance_max_grad_norm: 6.0
 collision_guidance_scale_jitter: 0.0
 collision_guidance_target_dist_jitter: 0.0
 collision_guidance_close_dist_jitter: 0.0
+
+# not-collision guidance (repulsion from reference trajectory)
+# note: when enabled, collision guidance is internally disabled to avoid conflicts
+not_collision_guidance_enabled: False
+not_collision_guidance_weight_away: 1.0
+not_collision_guidance_weight_clear: 1.2
+not_collision_guidance_away_dist: 1.4
+not_collision_guidance_target_dist: 2.0
+not_collision_guidance_focus_ratio: 0.6
+not_collision_guidance_softmin_temp: 0.25
+not_collision_guidance_global_scale: 1.0
+# not-collision-only sampling controls (used when dynamics_guidance_enabled=False)
+not_collision_guidance_sampling_scale: 0.12
+not_collision_guidance_start_ratio: 0.0
+not_collision_guidance_inner_steps: 1
+not_collision_guidance_max_grad_norm: 6.0
+# per-sample diversity jitter for not-collision guidance
+not_collision_guidance_scale_jitter: 0.0
+not_collision_guidance_target_dist_jitter: 0.0
+not_collision_guidance_away_dist_jitter: 0.0
 # sampling diversity
 sampling_xt_temperature: 1.0
 viz_sampling_flexibility: 0.0

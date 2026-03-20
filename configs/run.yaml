@@ -1,66 +1,119 @@
-############ MAT_VIZ Run Config #############
-# This file is intended for mat_viz.py runs.
-# Checkpoint is selected only by viz_ckpt_dir + viz_ckpt_name.
-# mat_viz runtime-only options (all previous CLI args moved here)
-# dataset: set explicitly (e.g., mat_collision) or leave empty to infer from ckpt name.
-dataset: "mat_collision_notcol"
+﻿############ MAT_VIZ 실행 설정 (코드 기반 주석) ############
+# 확인 기준 코드:
+# - mat_viz.py: 체크포인트/출력 경로/런타임 옵션
+# - mid.py + models/autoencoder.py + models/diffusion.py: 예측/가이던스/시각화
+# - utils/trajectron_hypers.py: Trajectron 하이퍼파라미터(특히 시간축)
+# 주의: 아래 키 중 일부는 현재 main.py/mat_viz.py -> MID 경로에서 실제로 읽히지 않습니다.
+
+# 사용할 데이터셋 이름.
+# mat_viz.py에서 비워두면 체크포인트 이름(<dataset>_epochN.pt)에서 자동 추론.
+dataset: "mat_collision_yescol"
+
+# 체크포인트가 있는 폴더 경로.
 viz_ckpt_dir: matviz/pt
+# 로드할 체크포인트 파일명(파일명만 허용, 경로 포함 금지).
 viz_ckpt_name: "mat_collision_epoch220.pt"
+# 시각화 결과 루트 폴더.
 viz_output_dir: matviz/results
+# mat_viz 샘플 선택/시각화 재현 시드.
 viz_seed: 0
+# 출력 epoch 태그 강제 지정(정수 또는 null). null이면 ckpt epoch 사용.
 viz_epoch_tag: null
+
+# 차량 박스 폭(m): 시각화 박스/겹침 판단에 사용.
 car_width: 1.825
+# 차량 박스 길이(m): 시각화 박스/겹침 판단에 사용.
 car_length: 4.650
-# mat data sampling time
+
+# [현재 run.yaml 값 미반영] 시간축은 utils/trajectron_hypers.py가 configs/mat.yaml에서 읽습니다.
+# 즉, 아래 3개는 현재 main/mat_viz 경로에서 계산에 직접 사용되지 않습니다.
 data_dt: 0.02
-# optional second-based horizon config (converted to steps by data_dt)
 history_sec: 0.6
 prediction_sec: 0.9
 
-# Training 
+# 한 번의 시각화 실행에서 출력할 장면 수(mid.py _visualize_epoch).
 viz_num_examples: 30
+# 장면당 생성 샘플 수(mid.py _visualize_epoch).
 viz_num_samples: 5
-# prediction/generation targets: 1=target only (ego fixed), 2=ego+target
+# 예측 대상 선택: 1=Target만 생성(Ego 고정), 2=Ego+Target 생성.
 viz_predict_agents: 1
+
+# 차량 박스 렌더링 on/off.
 viz_vehicle_boxes_enabled: True
+# 박스 중심점 강조 표시 on/off.
 viz_vehicle_box_center_enabled: True
+# yaw 화살표 표시 on/off.
 viz_vehicle_box_yaw_arrow_enabled: True
+# yaw 화살표 길이 스케일.
 viz_vehicle_box_yaw_arrow_scale: 0.2
 
-# training params
+############ 학습/평가 기본 파라미터 ############
+# Adam learning rate(mid.py _build_optimizer).
 lr: 0.001
+# 학습 시 gradient clip 값(mid.py train).
 grad_clip: 1.0
+# 데이터셋 pkl 폴더(mid.py: <data_dir>/<dataset>_train/test.pkl).
 data_dir: processed_data
-diffnet: TransformerConcatLinear #TransformerConcatLinear
+# Diffusion 네트워크 클래스명(models/diffusion.py 내 클래스명과 매칭).
+diffnet: TransformerConcatLinear
+# 인코더 차원(및 일부 hyperparam 차원 계산에 사용).
 encoder_dim: 256
+# Transformer layer 수(diffusion 네트워크 생성 시 사용).
 tf_layer: 3
+# 학습 epoch 수(main.py에서 eval_mode=False일 때만 의미 있음).
 epochs: 500
+# 학습 배치 크기.
 batch_size: 256
+# 평가/시각화 배치 크기.
 eval_batch_size: 256
+# [현재 run.yaml 값 미반영] k_eval은 get_traj_hypers() 기본값(25)을 사용합니다.
 k_eval: 25
+# [mat_viz에서 fallback 용도] viz_seed가 없을 때만 seed를 참조.
 seed: 123
+# 학습 중 주기 평가 간격(mid.py train).
 eval_every: 0
-# Testing
+
+# 평가할 체크포인트 epoch(main.py eval_mode=True일 때 사용).
+# mat_viz.py에서는 선택한 ckpt의 epoch로 자동 덮어씁니다.
 eval_at: 100
+# 평가 모드 여부(main.py).
+# mat_viz.py에서는 항상 True로 덮어씁니다.
 eval_mode: True
-# set to "ddim" to enable fast sampling
+# 샘플링 방식(ddpm 또는 ddim).
 sampling: ddpm
 
-# dynamics guidance during denoising (x_{t-1} <- x_{t-1} - lambda * grad G)
+############ 동역학 가이던스 (J_dyn) ############
+# 동역학/충돌 가이던스 루프 활성 조건의 일부.
+# 실제 guidance loop는 (dynamics_guidance_enabled OR collision_guidance_enabled)일 때 활성.
 dynamics_guidance_enabled: True
+# guidance update step 크기(lambda). dynamics_guidance_enabled=True일 때 사용.
 dynamics_guidance_scale: 0.035
+# guidance 적용 시작 비율(dynamics_guidance_enabled=True일 때 사용).
 dynamics_guidance_start_ratio: 0.0
+# diffusion step당 guidance 내부 반복 횟수(dynamics_guidance_enabled=True일 때 사용).
 dynamics_guidance_inner_steps: 2
+# guidance gradient clip(dynamics_guidance_enabled=True일 때 사용).
 dynamics_guidance_max_grad_norm: 4.0
+# 수치 안정성 epsilon(J_dyn 계산).
 dynamics_guidance_eps: 1.0e-6
+# 저속 마스크 기준 속도(J_dyn 계산).
 dynamics_guidance_min_speed: 0.0
+
+# J_dyn 제한값들.
 dynamics_guidance_max_accel: 6.0
 dynamics_guidance_max_jerk: 8.0
+# yaw rate 제한. use_bicycle_curvature=False일 때 직접 사용.
+# 또한 bicycle_rollout에서도 추가 yaw-rate 상한으로 사용.
 dynamics_guidance_max_yaw_rate: 0.6
+# 곡률 제한. use_bicycle_curvature=False일 때만 직접 사용.
+# use_bicycle_curvature=True면 현재 코드에서는 bicycle 기하값으로 대체되어 사실상 무시됨.
 dynamics_guidance_max_curvature: 0.25
 dynamics_guidance_max_lateral_accel: 4.5
 dynamics_guidance_max_slip_ratio: 3.0
 dynamics_guidance_reverse_tolerance: 0.25
+
+# J_dyn 항 가중치들.
+# dynamics_guidance_enabled=False면 내부에서 dyn_w=0으로 곱해져 J_dyn 항은 꺼집니다.
 dynamics_guidance_weight_accel: 0.20
 dynamics_guidance_weight_jerk: 0.10
 dynamics_guidance_weight_yaw_rate: 0.15
@@ -69,67 +122,150 @@ dynamics_guidance_weight_lateral_accel: 0.20
 dynamics_guidance_weight_slip: 0.05
 dynamics_guidance_weight_reverse: 0.0
 
+# True면 회전 제약을 bicycle 기하(tan(delta_max)/wheelbase) 기준으로 계산.
 dynamics_guidance_use_bicycle_curvature: True
+# bicycle 기하 휠베이스(m).
 dynamics_guidance_wheelbase: 2.70
+# bicycle 최대 조향각(deg).
 dynamics_guidance_max_steer_deg: 32.0
+# 저속 안티-스핀 yaw 패널티 가중치.
+# dynamics_guidance_enabled=False면 dyn_w=0으로 실질 비활성.
 dynamics_guidance_low_speed_yaw_weight: 0.6
+# 저속 안티-스핀 적용 속도 임계값(m/s).
 dynamics_guidance_low_speed_yaw_threshold: 0.3
 
-# collision guidance (used when reference trajectory is provided at sampling time)
-collision_guidance_enabled: True
+############ 충돌 가이던스 (J_col) ############
+# 충돌 가이드 on/off.
+# 실제 J_col 계산은 collision_enabled=True 이고 reference trajectory가 있을 때만 유효.
+collision_guidance_enabled: False
+# J_col의 close 항 가중치.
 collision_guidance_weight_close: 100.0
+# J_col의 hit 항 가중치.
 collision_guidance_weight_hit: 3500.0
+# close 항 목표 거리 임계값(m).
 collision_guidance_close_dist: 0.0
+# hit 항 목표 거리(m).
 collision_guidance_target_dist: 0.0
+# 예측 구간 중 J_col을 집중할 후반 비율.
 collision_guidance_focus_ratio: 1.0
+# 시간축 softmin 온도(작을수록 가장 가까운 시점에 집중).
 collision_guidance_softmin_temp: 0.30
-# collision-only sampling controls (used when dynamics_guidance_enabled=False)
-collision_guidance_global_scale: 500
+
+# J_col 전체 스케일(collision_scale).
+# dynamics on/off와 무관하게, J_col이 활성일 때 곱해집니다.
+collision_guidance_global_scale: 800
+# 아래 4개는 dynamics_guidance_enabled=False일 때만 guidance loop 파라미터로 사용됩니다.
 collision_guidance_sampling_scale: 0.12
 collision_guidance_start_ratio: 0.0
 collision_guidance_inner_steps: 1
 collision_guidance_max_grad_norm: 6.0
-# per-sample diversity jitter for collision guidance
+
+# 샘플별 다양성 jitter(충돌 가이드 활성 시 sample마다 변동).
 collision_guidance_scale_jitter: 2.0
 collision_guidance_target_dist_jitter: 2.0
 collision_guidance_close_dist_jitter: 1.0
-# sampling diversity
+
+# 비충돌(회피) 가이드: 충돌 대신 reference 차량과 거리 확보를 유도합니다.
+# 주의: not_collision_guidance_enabled=True면 내부에서 collision_guidance는 자동 비활성 처리됩니다.
+not_collision_guidance_enabled: True
+# 가까워지면 밀어내는 항의 가중치(스텝 평균).
+not_collision_guidance_weight_away: 1000.0
+# 최소거리(soft-min) 확보 항의 가중치.
+not_collision_guidance_weight_clear: 1000.0
+# 스텝별 회피 거리 임계값(m). dist < away_dist 구간에 패널티.
+not_collision_guidance_away_dist: 10
+# 최소거리 목표값(m). 궤적 전체 최접근거리(soft-min)가 이 값보다 작으면 패널티.
+not_collision_guidance_target_dist: 2.0
+# 예측 구간 중 회피 목적함수 집중 비율.
+not_collision_guidance_focus_ratio: 1.0
+# 시간축 softmin 온도(작을수록 최근접 시점에 집중).
+not_collision_guidance_softmin_temp: 0.7
+# 회피 목적함수 전체 스케일(not_collision_scale). dynamics on/off와 무관하게 곱해집니다.
+not_collision_guidance_global_scale: 10000.0
+# 아래 4개는 dynamics_guidance_enabled=False일 때 guidance loop 파라미터로 사용됩니다.
+not_collision_guidance_sampling_scale: 0.12
+not_collision_guidance_start_ratio: 0.0
+not_collision_guidance_inner_steps: 1
+not_collision_guidance_max_grad_norm: 6.0
+# 샘플별 다양성 jitter(회피 가이드 활성 시 sample마다 변동).
+not_collision_guidance_scale_jitter: 2.0
+not_collision_guidance_target_dist_jitter: 2.0
+not_collision_guidance_away_dist_jitter: 2.0
+
+# 초기 x_T 노이즈 온도(샘플 다양성에 영향).
 sampling_xt_temperature: 1.0
+# diffusion sigma flexibility(mid.py -> diffusion.sample flexibility).
 viz_sampling_flexibility: 0.0
 
-# yaw auxiliary supervision during training
+############ 학습 보조 손실 (Yaw) ############
+# yaw 보조 손실 사용 여부(models/autoencoder.py get_loss).
 yaw_loss_enabled: True
+# yaw 보조 손실 가중치.
 yaw_loss_weight: 0.1
+# yaw 보조 손실에서 이동 마스크 최소 속도.
 yaw_loss_min_speed: 0.5
+# yaw 보조 손실 수치 안정성 epsilon.
 yaw_loss_speed_eps: 1.0e-6
 
-# bicycle-based rollout projection for generated trajectories
+############ Bicycle Rollout 투영 (생성 후처리) ############
+# 생성 velocity를 bicycle 제약 기반으로 투영할지 여부.
 bicycle_rollout_enabled: True
+# rollout 휠베이스(m).
 bicycle_rollout_wheelbase: 2.70
+# rollout 최대 조향각(deg).
 bicycle_rollout_max_steer_deg: 32.0
+# rollout 저속 임계값(m/s).
 bicycle_rollout_low_speed_threshold: 0.3
-############### Trajectron++ Config #################
-# misc
+
+############### Trajectron++ 호환 키 ############
+# 아래 키는 원래 Trajectron CLI와의 호환 목적이 섞여 있습니다.
+# 현재 코드 경로에서 실제 반영 여부를 각 주석에 명시합니다.
+
+# [현재 미사용] main.py/mat_viz.py -> MID 경로에서 읽지 않음.
 conf: None
+# [현재 미사용] debug 플래그를 참조하는 분기 없음.
 debug: False
+# 데이터 로더 worker 수(mid.py train/eval dataloader).
 preprocess_workers: 0
-# model parameters
+
+# [현재 run.yaml 값 미반영] get_traj_hypers() 고정값을 사용.
+# 또한 mid.py에서는 _build_offline_scene_graph() 호출이 주석 처리되어 실제 계산도 수행하지 않음.
 offline_scene_graph: yes
+# [현재 run.yaml 값 미반영] get_traj_hypers() 고정값 사용.
 dynamic_edges: yes
+# [현재 run.yaml 값 미반영] get_traj_hypers() 고정값 사용.
 edge_state_combine_method: sum
+# [현재 run.yaml 값 미반영] get_traj_hypers() 고정값 사용.
 edge_influence_combine_method: attention
+# [현재 run.yaml 값 미반영] get_traj_hypers() 고정값 사용.
 edge_addition_filter: [0.25, 0.5, 0.75, 1.0]
+# [현재 run.yaml 값 미반영] get_traj_hypers() 고정값 사용.
 edge_removal_filter: [1.0, 0.0]
+
+# attention radius 수동 오버라이드(mid.py train/eval loader에서 사용).
 override_attention_radius: []
+# robot node 포함 여부(mid.py dataset 구성 시 return_robot 계산에 사용).
 incl_robot_node: False
+# [현재 run.yaml 값 미반영] map_encoding은 get_traj_hypers() 고정값 사용.
 map_encoding: False
+# 학습 데이터 증강 on/off(mid.py train 루프에서 train_dataset.augment에 반영).
 augment: False
+# [현재 run.yaml 값 미반영] node_freq_mult_*는 get_traj_hypers() 고정값 사용.
 node_freq_mult_train: False
+# [현재 run.yaml 값 미반영] node_freq_mult_*는 get_traj_hypers() 고정값 사용.
 node_freq_mult_eval: False
+# 부분 반영: mid.py에서 scene 샘플링 확률 선택에 사용.
+# 단, EnvironmentDataset 생성 파라미터는 get_traj_hypers() 값을 사용.
 scene_freq_mult_train: False
+# 부분 반영: mid.py에서 scene 샘플링 확률 선택에 사용.
+# 단, EnvironmentDataset 생성 파라미터는 get_traj_hypers() 값을 사용.
 scene_freq_mult_eval: False
+# [현재 미사용] scene_freq_mult_viz를 참조하는 코드 경로 없음.
 scene_freq_mult_viz: False
+# [현재 run.yaml 값 미반영] no_edge_encoding은 get_traj_hypers() 고정값 사용.
 no_edge_encoding: False
-# Data Parameters:
+
+# [현재 미사용] config.device를 참조하는 코드 경로 없음(cuda 하드코딩 경로 사용).
 device: cuda
+# [현재 미사용] config.eval_device를 참조하는 코드 경로 없음.
 eval_device: None
