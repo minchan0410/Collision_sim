@@ -24,9 +24,9 @@ class AutoEncoder(Module):
 
     def _build_dynamics_guidance(self, dynamics, velocity_std):
         dynamics_enabled = bool(getattr(self.config, "dynamics_guidance_enabled", False))
-        collision_mode_enabled = bool(getattr(self.config, "collision_mode_guidance_enabled", False))
-        enabled = dynamics_enabled or collision_mode_enabled
-        if not enabled:
+        collision_enabled = bool(getattr(self.config, "collision_guidance_enabled", False))
+        guidance_enabled = dynamics_enabled or collision_enabled
+        if not guidance_enabled:
             return {"enabled": False}
 
         initial_velocity = None
@@ -35,19 +35,25 @@ class AutoEncoder(Module):
             initial_velocity = dynamics.initial_conditions.get("vel", None)
             initial_position = dynamics.initial_conditions.get("pos", None)
 
-        collision_target_x = float(getattr(self.config, "collision_mode_guidance_target_x", 0.0))
-        collision_target_y = float(getattr(self.config, "collision_mode_guidance_target_y", 0.0))
-        collision_target_yaw_deg = float(getattr(self.config, "collision_mode_guidance_target_yaw_deg", 0.0))
-        collision_target_vx = float(getattr(self.config, "collision_mode_guidance_target_speed_x", 0.0))
-        collision_target_vy = float(getattr(self.config, "collision_mode_guidance_target_speed_y", 0.0))
         dyn_w = 1.0 if dynamics_enabled else 0.0
+        if dynamics_enabled:
+            guidance_scale = float(getattr(self.config, "dynamics_guidance_scale", 0.03))
+            guidance_start_ratio = float(getattr(self.config, "dynamics_guidance_start_ratio", 0.0))
+            guidance_inner_steps = int(getattr(self.config, "dynamics_guidance_inner_steps", 1))
+            guidance_max_grad_norm = float(getattr(self.config, "dynamics_guidance_max_grad_norm", 1.5))
+        else:
+            # Allow collision-only guidance even when dynamics_guidance_enabled=False.
+            guidance_scale = float(getattr(self.config, "collision_guidance_sampling_scale", 0.12))
+            guidance_start_ratio = float(getattr(self.config, "collision_guidance_start_ratio", 0.0))
+            guidance_inner_steps = int(getattr(self.config, "collision_guidance_inner_steps", 1))
+            guidance_max_grad_norm = float(getattr(self.config, "collision_guidance_max_grad_norm", 6.0))
 
         return {
             "enabled": True,
-            "scale": float(getattr(self.config, "dynamics_guidance_scale", 0.03)),
-            "start_ratio": float(getattr(self.config, "dynamics_guidance_start_ratio", 0.0)),
-            "inner_steps": int(getattr(self.config, "dynamics_guidance_inner_steps", 1)),
-            "max_grad_norm": float(getattr(self.config, "dynamics_guidance_max_grad_norm", 1.5)),
+            "scale": guidance_scale,
+            "start_ratio": guidance_start_ratio,
+            "inner_steps": guidance_inner_steps,
+            "max_grad_norm": guidance_max_grad_norm,
             "dt": float(getattr(dynamics, "dt", 1.0)),
             "velocity_std": velocity_std,
             "initial_velocity": initial_velocity,
@@ -75,31 +81,20 @@ class AutoEncoder(Module):
             # Directly suppress yaw-rate in near-stop regime.
             "low_speed_yaw_weight": dyn_w * float(getattr(self.config, "dynamics_guidance_low_speed_yaw_weight", 0.6)),
             "low_speed_yaw_threshold": float(getattr(self.config, "dynamics_guidance_low_speed_yaw_threshold", 0.3)),
-            # Collision mode guidance (11~53) based on impact area indexing.
-            "collision_mode_enabled": collision_mode_enabled,
-            "collision_mode_id": int(getattr(self.config, "collision_mode_guidance_mode", 11)),
-            "collision_mode_weight": float(getattr(self.config, "collision_mode_guidance_weight", 0.0)),
-            "collision_mode_sigma": float(getattr(self.config, "collision_mode_guidance_sigma", 1.5)),
-            "collision_mode_use_softmin": bool(getattr(self.config, "collision_mode_guidance_use_softmin", True)),
-            "collision_mode_softmin_temperature": float(
-                getattr(self.config, "collision_mode_guidance_softmin_temperature", 1.0)
-            ),
-            "collision_mode_time_index": int(getattr(self.config, "collision_mode_guidance_time_index", -1)),
-            "collision_mode_weight_approach": float(getattr(self.config, "collision_mode_guidance_weight_approach", 0.0)),
-            "collision_mode_approach_cos": float(getattr(self.config, "collision_mode_guidance_approach_cos", 0.0)),
-            "collision_mode_weight_closing": float(getattr(self.config, "collision_mode_guidance_weight_closing", 0.0)),
-            "collision_mode_min_closing_speed": float(
-                getattr(self.config, "collision_mode_guidance_min_closing_speed", 0.5)
-            ),
-            "collision_mode_target_position": [collision_target_x, collision_target_y],
-            "collision_mode_target_yaw": collision_target_yaw_deg * (math.pi / 180.0),
-            "collision_mode_target_velocity": [collision_target_vx, collision_target_vy],
-            "collision_mode_target_length": float(
-                getattr(self.config, "collision_mode_guidance_target_length", getattr(self.config, "car_length", 4.65))
-            ),
-            "collision_mode_target_width": float(
-                getattr(self.config, "collision_mode_guidance_target_width", getattr(self.config, "car_width", 1.825))
-            ),
+            # Optional collision guidance (active only when reference trajectory is provided).
+            "collision_enabled": bool(getattr(self.config, "collision_guidance_enabled", False)),
+            "collision_weight_close": float(getattr(self.config, "collision_guidance_weight_close", 1.0)),
+            "collision_weight_hit": float(getattr(self.config, "collision_guidance_weight_hit", 1.2)),
+            "collision_close_dist": float(getattr(self.config, "collision_guidance_close_dist", 1.4)),
+            "collision_target_dist": float(getattr(self.config, "collision_guidance_target_dist", 0.35)),
+            "collision_focus_ratio": float(getattr(self.config, "collision_guidance_focus_ratio", 0.6)),
+            "collision_softmin_temp": float(getattr(self.config, "collision_guidance_softmin_temp", 0.25)),
+            "collision_scale": float(getattr(self.config, "collision_guidance_global_scale", 1.0)),
+            # Diversity knobs for collision-guided sampling.
+            "collision_scale_jitter": float(getattr(self.config, "collision_guidance_scale_jitter", 0.0)),
+            "collision_target_dist_jitter": float(getattr(self.config, "collision_guidance_target_dist_jitter", 0.0)),
+            "collision_close_dist_jitter": float(getattr(self.config, "collision_guidance_close_dist_jitter", 0.0)),
+            "xT_temperature": float(getattr(self.config, "sampling_xt_temperature", 1.0)),
         }
 
     @staticmethod
@@ -110,8 +105,6 @@ class AutoEncoder(Module):
             return base_guidance
         merged = dict(base_guidance)
         merged.update(override_guidance)
-        if bool(merged.get("collision_mode_enabled", False)):
-            merged["enabled"] = True
         return merged
 
     def encode(self, batch, node_type):

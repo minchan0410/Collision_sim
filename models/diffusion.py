@@ -127,248 +127,93 @@ class DiffusionTraj(Module):
         return self._masked_mean(violation, mask=mask)
 
     @staticmethod
-    def _as_tensor(value, device, dtype):
+    def _broadcast_batch_matrix(value, batch_size, device, dtype):
         if value is None:
             return None
-        if torch.is_tensor(value):
-            return value.to(device=device, dtype=dtype)
-        return torch.tensor(value, device=device, dtype=dtype)
-
-    @staticmethod
-    def _expand_batch_tensor(value, batch_size):
-        if value is None:
-            return None
-        if value.size(0) == batch_size:
-            return value
+        if not torch.is_tensor(value):
+            value = torch.tensor(value, device=device, dtype=dtype)
+        else:
+            value = value.to(device=device, dtype=dtype)
+        if value.dim() == 1:
+            value = value.unsqueeze(0)
         if value.size(0) == 1 and batch_size > 1:
-            return value.expand(batch_size, *value.shape[1:])
-        return value[:batch_size]
+            value = value.expand(batch_size, -1)
+        elif value.size(0) != batch_size:
+            value = value[:batch_size]
+        return value
 
-    @staticmethod
-    def _collision_mode_local_geometry(mode_id, length, width):
-        """
-        Collision mode definition (from Fig.2, Lee et al. IEEE Access 2024):
-            first digit: front(1) ... rear(5)
-            second digit: left(1), center(2; only for 1x/5x), right(3)
-        Valid classes: 11,12,13,21,23,31,33,41,43,51,52,53
-        """
-        col = mode_id // 10
-        row = mode_id % 10
-        valid = (1 <= col <= 5) and ((row in (1, 3)) or (row == 2 and col in (1, 5)))
-        if not valid:
-            return None, None
+    def _compute_collision_objective(self, vel_phys, guidance):
+        if not bool(guidance.get("collision_enabled", False)):
+            return vel_phys.new_tensor(0.0)
 
-        # col: 1..5 -> +L/2, +L/4, 0, -L/4, -L/2
-        x_local = (3.0 - float(col)) * (length / 4.0)
-        # row: 1,2,3 -> +W/2(left), 0, -W/2(right)
-        y_local = (2.0 - float(row)) * (width / 2.0)
-        local_point = torch.stack([x_local, y_local], dim=-1)
-
-        # Outward normal in ego-local frame.
-        nx = torch.zeros_like(x_local)
-        ny = torch.zeros_like(y_local)
-        if col == 1:
-            nx = nx + 1.0
-        elif col == 5:
-            nx = nx - 1.0
-
-        if row == 1:
-            ny = ny + 1.0
-        elif row == 3:
-            ny = ny - 1.0
-
-        local_normal = torch.stack([nx, ny], dim=-1)
-        local_normal = local_normal / torch.norm(local_normal, dim=-1, keepdim=True).clamp_min(1e-6)
-        return local_point, local_normal
-
-    def _compute_collision_mode_objective(self, vel_phys, guidance):
-        if not guidance or not bool(guidance.get("collision_mode_enabled", False)):
+        ref_pos = guidance.get("collision_reference_positions", None)
+        if ref_pos is None:
             return vel_phys.new_tensor(0.0)
 
         eps = float(guidance.get("eps", 1e-6))
         dt = max(float(guidance.get("dt", 1.0)), eps)
-        batch_size, horizon, _ = vel_phys.shape
-        if horizon <= 0:
-            return vel_phys.new_tensor(0.0)
+        batch_size = vel_phys.size(0)
+        horizon = vel_phys.size(1)
 
-        weight = float(guidance.get("collision_mode_weight", 0.0))
-        if weight <= 0:
-            return vel_phys.new_tensor(0.0)
-
-        mode_raw = guidance.get("collision_mode_id", 11)
-        try:
-            mode_id = int(mode_raw)
-        except (TypeError, ValueError):
-            return vel_phys.new_tensor(0.0)
-
-        initial_pos = self._as_tensor(guidance.get("initial_position", None), vel_phys.device, vel_phys.dtype)
-        if initial_pos is None:
-            return vel_phys.new_tensor(0.0)
-        if initial_pos.dim() == 1:
-            initial_pos = initial_pos.unsqueeze(0)
-        initial_pos = self._expand_batch_tensor(initial_pos, batch_size)
-        if initial_pos.size(-1) != 2:
-            return vel_phys.new_tensor(0.0)
-
-        adv_pos = initial_pos.unsqueeze(1) + torch.cumsum(vel_phys * dt, dim=1)  # [B, T, 2]
-
-        target_positions = self._as_tensor(guidance.get("collision_mode_target_positions", None), vel_phys.device, vel_phys.dtype)
-        if target_positions is not None:
-            if target_positions.dim() == 2:
-                target_positions = target_positions.unsqueeze(0)
-            target_positions = self._expand_batch_tensor(target_positions, batch_size)
-            if target_positions.size(1) < horizon:
-                pad = target_positions[:, -1:, :].expand(batch_size, horizon - target_positions.size(1), 2)
-                target_positions = torch.cat([target_positions, pad], dim=1)
-            else:
-                target_positions = target_positions[:, :horizon, :]
+        if not torch.is_tensor(ref_pos):
+            ref_pos = torch.tensor(ref_pos, device=vel_phys.device, dtype=vel_phys.dtype)
         else:
-            target_pos0 = self._as_tensor(guidance.get("collision_mode_target_position", None), vel_phys.device, vel_phys.dtype)
-            if target_pos0 is None:
-                return vel_phys.new_tensor(0.0)
-            if target_pos0.dim() == 1:
-                target_pos0 = target_pos0.unsqueeze(0)
-            target_pos0 = self._expand_batch_tensor(target_pos0, batch_size)
-            if target_pos0.size(-1) != 2:
-                return vel_phys.new_tensor(0.0)
+            ref_pos = ref_pos.to(device=vel_phys.device, dtype=vel_phys.dtype)
 
-            target_vel = self._as_tensor(guidance.get("collision_mode_target_velocity", None), vel_phys.device, vel_phys.dtype)
-            if target_vel is None:
-                target_vel = torch.zeros_like(target_pos0)
-            if target_vel.dim() == 1:
-                target_vel = target_vel.unsqueeze(0)
-            target_vel = self._expand_batch_tensor(target_vel, batch_size)
-            if target_vel.size(-1) != 2:
-                target_vel = torch.zeros_like(target_pos0)
-
-            t_axis = torch.arange(1, horizon + 1, device=vel_phys.device, dtype=vel_phys.dtype).view(1, horizon, 1) * dt
-            target_positions = target_pos0.unsqueeze(1) + target_vel.unsqueeze(1) * t_axis
-
-        target_yaws = self._as_tensor(guidance.get("collision_mode_target_yaws", None), vel_phys.device, vel_phys.dtype)
-        if target_yaws is not None:
-            if target_yaws.dim() == 1:
-                target_yaws = target_yaws.unsqueeze(0)
-            target_yaws = self._expand_batch_tensor(target_yaws, batch_size)
-            if target_yaws.size(1) < horizon:
-                pad = target_yaws[:, -1:].expand(batch_size, horizon - target_yaws.size(1))
-                target_yaws = torch.cat([target_yaws, pad], dim=1)
-            else:
-                target_yaws = target_yaws[:, :horizon]
-        else:
-            target_yaw = self._as_tensor(guidance.get("collision_mode_target_yaw", None), vel_phys.device, vel_phys.dtype)
-            if target_yaw is None:
-                # If yaw is not given, infer from target velocity when available.
-                target_vel = self._as_tensor(guidance.get("collision_mode_target_velocity", None), vel_phys.device, vel_phys.dtype)
-                if target_vel is None:
-                    target_yaw = torch.zeros((batch_size,), device=vel_phys.device, dtype=vel_phys.dtype)
-                else:
-                    if target_vel.dim() == 1:
-                        target_vel = target_vel.unsqueeze(0)
-                    target_vel = self._expand_batch_tensor(target_vel, batch_size)
-                    target_yaw = torch.atan2(target_vel[:, 1], target_vel[:, 0])
-            if target_yaw.dim() == 0:
-                target_yaw = target_yaw.view(1)
-            if target_yaw.dim() == 1:
-                target_yaw = target_yaw.unsqueeze(0) if target_yaw.size(0) == horizon else target_yaw.unsqueeze(1)
-            if target_yaw.dim() == 2 and target_yaw.size(0) != batch_size:
-                target_yaw = self._expand_batch_tensor(target_yaw, batch_size)
-            if target_yaw.dim() == 2 and target_yaw.size(1) == 1:
-                target_yaws = target_yaw.expand(batch_size, horizon)
-            elif target_yaw.dim() == 2 and target_yaw.size(1) >= horizon:
-                target_yaws = target_yaw[:, :horizon]
-            elif target_yaw.dim() == 2 and target_yaw.size(1) < horizon:
-                pad = target_yaw[:, -1:].expand(batch_size, horizon - target_yaw.size(1))
-                target_yaws = torch.cat([target_yaw, pad], dim=1)
-            else:
-                target_yaws = target_yaw.reshape(batch_size, 1).expand(batch_size, horizon)
-
-        length = self._as_tensor(guidance.get("collision_mode_target_length", 4.65), vel_phys.device, vel_phys.dtype)
-        width = self._as_tensor(guidance.get("collision_mode_target_width", 1.825), vel_phys.device, vel_phys.dtype)
-        if length.dim() == 0:
-            length = length.view(1)
-        if width.dim() == 0:
-            width = width.view(1)
-        length = self._expand_batch_tensor(length, batch_size).reshape(batch_size)
-        width = self._expand_batch_tensor(width, batch_size).reshape(batch_size)
-
-        local_point, local_normal = self._collision_mode_local_geometry(mode_id, length, width)
-        if local_point is None or local_normal is None:
+        if ref_pos.dim() == 2 and ref_pos.size(-1) == 2:
+            ref_pos = ref_pos.unsqueeze(0)
+        if ref_pos.dim() != 3 or ref_pos.size(-1) != 2 or horizon <= 0:
             return vel_phys.new_tensor(0.0)
 
-        cos_yaw = torch.cos(target_yaws)
-        sin_yaw = torch.sin(target_yaws)
+        if ref_pos.size(0) == 1 and batch_size > 1:
+            ref_pos = ref_pos.expand(batch_size, -1, -1)
+        elif ref_pos.size(0) != batch_size:
+            ref_pos = ref_pos[:batch_size]
+        if ref_pos.size(0) == 0:
+            return vel_phys.new_tensor(0.0)
 
-        lp_x = local_point[:, 0].unsqueeze(1)
-        lp_y = local_point[:, 1].unsqueeze(1)
-        offset_x = lp_x * cos_yaw - lp_y * sin_yaw
-        offset_y = lp_x * sin_yaw + lp_y * cos_yaw
-        target_contact = target_positions + torch.stack([offset_x, offset_y], dim=-1)  # [B, T, 2]
+        initial_position = guidance.get("initial_position", None)
+        initial_position = self._broadcast_batch_matrix(initial_position, batch_size, vel_phys.device, vel_phys.dtype)
+        if initial_position is None:
+            initial_position = vel_phys.new_zeros((batch_size, 2))
 
-        ln_x = local_normal[:, 0].unsqueeze(1)
-        ln_y = local_normal[:, 1].unsqueeze(1)
-        normal_x = ln_x * cos_yaw - ln_y * sin_yaw
-        normal_y = ln_x * sin_yaw + ln_y * cos_yaw
-        normal_world = torch.stack([normal_x, normal_y], dim=-1)
-        normal_world = normal_world / torch.norm(normal_world, dim=-1, keepdim=True).clamp_min(eps)
+        pred_pos = initial_position.unsqueeze(1) + torch.cumsum(vel_phys * dt, dim=1)
+        min_len = min(pred_pos.size(1), ref_pos.size(1))
+        if min_len <= 0:
+            return vel_phys.new_tensor(0.0)
+        pred_pos = pred_pos[:, :min_len]
+        ref_pos = ref_pos[:, :min_len]
 
-        dist2 = torch.sum((adv_pos - target_contact).pow(2), dim=-1)  # [B, T]
-        sigma = max(float(guidance.get("collision_mode_sigma", 1.5)), eps)
-        use_softmin = bool(guidance.get("collision_mode_use_softmin", True))
-        softmin_tau = max(float(guidance.get("collision_mode_softmin_temperature", 1.0)), eps)
+        dist = torch.norm(pred_pos - ref_pos, dim=-1)  # [B, T]
+        if dist.numel() == 0:
+            return vel_phys.new_tensor(0.0)
 
-        if use_softmin:
-            time_weights = torch.softmax(-dist2 / softmin_tau, dim=1)  # [B, T]
-            # Soft-argmin weighted distance (always non-negative and stable).
-            dist2_reduced = torch.sum(time_weights * dist2, dim=1)
-            vel_sel = torch.sum(time_weights.unsqueeze(-1) * vel_phys, dim=1)
-            normal_sel = torch.sum(time_weights.unsqueeze(-1) * normal_world, dim=1)
-            target_vel_sel = None
-            target_vel_hist = (target_positions[:, 1:] - target_positions[:, :-1]) / dt if horizon > 1 else None
-            if target_vel_hist is not None:
-                target_vel_hist = torch.cat([target_vel_hist[:, :1], target_vel_hist], dim=1)
-                target_vel_sel = torch.sum(time_weights.unsqueeze(-1) * target_vel_hist, dim=1)
-        else:
-            time_index = int(guidance.get("collision_mode_time_index", -1))
-            if time_index < 0:
-                time_index = horizon + time_index
-            time_index = max(0, min(horizon - 1, time_index))
-            dist2_reduced = dist2[:, time_index]
-            vel_sel = vel_phys[:, time_index]
-            normal_sel = normal_world[:, time_index]
-            target_vel_sel = None
-            if horizon > 1:
-                if time_index == 0:
-                    target_vel_sel = (target_positions[:, 1] - target_positions[:, 0]) / dt
-                else:
-                    target_vel_sel = (target_positions[:, time_index] - target_positions[:, time_index - 1]) / dt
+        focus_ratio = float(guidance.get("collision_focus_ratio", 0.6))
+        focus_ratio = min(max(focus_ratio, 0.0), 1.0)
+        focus_steps = max(1, int(round(min_len * focus_ratio)))
+        start_idx = max(0, min_len - focus_steps)
+        dist_focus = dist[:, start_idx:]
 
-        objective = weight * torch.mean(dist2_reduced / (sigma * sigma))
+        close_dist = float(guidance.get("collision_close_dist", 1.5))
+        target_dist = float(guidance.get("collision_target_dist", 0.35))
+        softmin_temp = max(float(guidance.get("collision_softmin_temp", 0.25)), eps)
+        weight_close = float(guidance.get("collision_weight_close", 1.0))
+        weight_hit = float(guidance.get("collision_weight_hit", 1.0))
 
-        # Optional approach-alignment term (adversary should move toward impact area inward normal).
-        weight_approach = float(guidance.get("collision_mode_weight_approach", 0.0))
-        if weight_approach > 0:
-            approach_cos = float(guidance.get("collision_mode_approach_cos", 0.0))
-            vel_dir = vel_sel / torch.norm(vel_sel, dim=-1, keepdim=True).clamp_min(eps)
-            inward_normal = -normal_sel
-            inward_normal = inward_normal / torch.norm(inward_normal, dim=-1, keepdim=True).clamp_min(eps)
-            align = torch.sum(vel_dir * inward_normal, dim=-1)
-            speed = torch.norm(vel_sel, dim=-1)
-            moving_mask = (speed > max(float(guidance.get("min_speed", 0.0)), 0.05)).float()
-            objective = objective + weight_approach * self._masked_mean(F.relu(approach_cos - align).pow(2), moving_mask)
+        objective = vel_phys.new_tensor(0.0)
+        if weight_close > 0:
+            close_penalty = F.relu(dist_focus - close_dist).pow(2).mean()
+            objective = objective + (weight_close * close_penalty)
 
-        # Optional closing-speed term.
-        weight_closing = float(guidance.get("collision_mode_weight_closing", 0.0))
-        if weight_closing > 0:
-            min_closing = float(guidance.get("collision_mode_min_closing_speed", 0.5))
-            if target_vel_sel is None:
-                target_vel_sel = torch.zeros_like(vel_sel)
-            rel_vel = vel_sel - target_vel_sel
-            inward_normal = -normal_sel
-            inward_normal = inward_normal / torch.norm(inward_normal, dim=-1, keepdim=True).clamp_min(eps)
-            closing_speed = torch.sum(rel_vel * inward_normal, dim=-1)
-            objective = objective + weight_closing * torch.mean(F.relu(min_closing - closing_speed).pow(2))
+        if weight_hit > 0:
+            softmin_dist = -softmin_temp * torch.logsumexp(-dist_focus / softmin_temp, dim=-1)
+            hit_penalty = F.relu(softmin_dist - target_dist).pow(2).mean()
+            objective = objective + (weight_hit * hit_penalty)
 
-        return objective
+        collision_scale = float(guidance.get("collision_scale", 1.0))
+        if collision_scale <= 0:
+            return vel_phys.new_tensor(0.0)
+        return collision_scale * objective
 
     def _compute_dynamics_objective(self, vel_phys, guidance):
         eps = float(guidance.get("eps", 1e-6))
@@ -497,11 +342,37 @@ class DiffusionTraj(Module):
             reverse_mask = (speed > min_speed).float()
             objective = objective + weight_reverse * self._masked_mean(reverse_violation, reverse_mask)
 
-        collision_objective = self._compute_collision_mode_objective(vel_phys, guidance)
-        if torch.isfinite(collision_objective):
-            objective = objective + collision_objective
+        objective = objective + self._compute_collision_objective(vel_phys, guidance)
 
         return objective
+
+    @staticmethod
+    def _sample_guidance_variant(guidance, device):
+        if not isinstance(guidance, dict) or len(guidance) == 0:
+            return {}
+        g = dict(guidance)
+        if not bool(g.get("collision_enabled", False)):
+            return g
+
+        base_collision_scale = float(g.get("collision_scale", 1.0))
+        scale_jitter = max(float(g.get("collision_scale_jitter", 0.0)), 0.0)
+        if scale_jitter > 0:
+            noise = float(torch.randn((), device=device).item()) * scale_jitter
+            g["collision_scale"] = max(base_collision_scale * math.exp(noise), 0.0)
+
+        target_dist = float(g.get("collision_target_dist", 0.0))
+        target_jitter = max(float(g.get("collision_target_dist_jitter", 0.0)), 0.0)
+        if target_jitter > 0:
+            target_dist = target_dist + float(torch.randn((), device=device).item()) * target_jitter
+            g["collision_target_dist"] = max(target_dist, 0.0)
+
+        close_dist = float(g.get("collision_close_dist", 0.0))
+        close_jitter = max(float(g.get("collision_close_dist_jitter", 0.0)), 0.0)
+        if close_jitter > 0:
+            close_dist = close_dist + float(torch.randn((), device=device).item()) * close_jitter
+            g["collision_close_dist"] = max(close_dist, 0.0)
+
+        return g
 
     def _apply_dynamics_guidance(self, x_next, guidance):
         if not guidance or not guidance.get("enabled", False):
@@ -547,22 +418,19 @@ class DiffusionTraj(Module):
     def sample(self, num_points, context, sample, bestof, point_dim=2,
                flexibility=0.0, ret_traj=False, sampling="ddpm", step=100, guidance=None):
         guidance = guidance or {}
-        guidance_enabled = bool(guidance.get("enabled", False))
-        start_ratio = float(guidance.get("start_ratio", 0.0)) if guidance_enabled else 0.0
-        start_ratio = min(max(start_ratio, 0.0), 1.0)
-        guidance_start_t = max(1, int(round(self.var_sched.num_steps * (1.0 - start_ratio))))
 
         traj_list = []
         for _ in range(sample):
             batch_size = context.size(0)
             device = context.device
+            sample_guidance = self._sample_guidance_variant(guidance, device=device)
+            guidance_enabled = bool(sample_guidance.get("enabled", False))
+            start_ratio = float(sample_guidance.get("start_ratio", 0.0)) if guidance_enabled else 0.0
+            start_ratio = min(max(start_ratio, 0.0), 1.0)
+            guidance_start_t = max(1, int(round(self.var_sched.num_steps * (1.0 - start_ratio))))
+            xT_temperature = max(float(sample_guidance.get("xT_temperature", 1.0)), 1e-6)
 
-            # if bestof:
-            #     x_T = torch.randn([batch_size, num_points, point_dim], device=device)
-            # else:
-            #     x_T = torch.zeros([batch_size, num_points, point_dim], device=device)
-
-            x_T = torch.randn([batch_size, num_points, point_dim], device=device)
+            x_T = torch.randn([batch_size, num_points, point_dim], device=device) * xT_temperature
 
             traj = {self.var_sched.num_steps: x_T}
             stride = step
@@ -591,7 +459,7 @@ class DiffusionTraj(Module):
                     raise ValueError(f"Unknown sampling method: {sampling}")
 
                 if guidance_enabled and t <= guidance_start_t:
-                    x_next = self._apply_dynamics_guidance(x_next, guidance)
+                    x_next = self._apply_dynamics_guidance(x_next, sample_guidance)
 
                 traj[t - stride] = x_next.detach()  # Stop gradient and save trajectory.
                 traj[t] = traj[t].cpu()             # Move previous output to CPU memory.

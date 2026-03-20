@@ -1,0 +1,156 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{mathtools}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\setlist[itemize]{leftmargin=1.25em}
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0pt}
+
+\title{Sampling-Stage Dynamics Guidance in Collision\_sim\\Mathematical Summary}
+\author{Code-level derivation from \texttt{models/diffusion.py} and \texttt{models/autoencoder.py}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Scope}
+This document summarizes how dynamics guidance is applied \emph{during sampling} in the current codebase.
+It does not describe training-time parameter updates.
+
+\section{Base Diffusion Sampling Update}
+At reverse step $t$, the base update is:
+\begin{align}
+\text{DDPM:}\quad
+\bm{x}_{t-1}
+&=
+c_0 \left(\bm{x}_t - c_1\,\epsilon_\theta(\bm{x}_t,t,\bm{c})\right)
+ + \sigma_t \bm{z},
+\\
+\text{DDIM:}\quad
+\bm{x}_{t-1}
+&=
+\sqrt{\bar{\alpha}_{t-1}}\,\hat{\bm{x}}_0
+ + \sqrt{1-\bar{\alpha}_{t-1}}\,\epsilon_\theta(\bm{x}_t,t,\bm{c}),
+\\
+\hat{\bm{x}}_0
+&=
+\frac{\bm{x}_t-\sqrt{1-\bar{\alpha}_t}\,\epsilon_\theta(\bm{x}_t,t,\bm{c})}
+{\sqrt{\bar{\alpha}_t}}.
+\end{align}
+
+If guidance is enabled and $t \le t_{\text{start}}$, an additional guidance step is applied:
+\begin{align}
+t_{\text{start}} &= \max\{1,\operatorname{round}(T(1-r_{\text{start}}))\},
+\\
+\bm{x}_{t-1} &\leftarrow \operatorname{ApplyGuidance}(\bm{x}_{t-1}).
+\end{align}
+
+\section{Guidance Update in Sample Space}
+\subsection{Standardized-to-physical velocity}
+The sampled state is velocity in standardized space. The code maps it to physical velocity:
+\begin{align}
+\bm{v} = \bm{x}\odot \bm{\sigma}_v,
+\end{align}
+where $\bm{\sigma}_v$ is the velocity standard deviation.
+
+\subsection{Gradient step}
+Let the total objective be
+\begin{align}
+J(\bm{v}) = J_{\text{dyn}}(\bm{v}) + J_{\text{col}}(\bm{v}).
+\end{align}
+Then each inner guidance iteration performs
+\begin{align}
+\bm{x}\leftarrow \bm{x}-\lambda \nabla_{\bm{x}}J(\bm{v}),
+\end{align}
+with optional gradient-norm clipping.
+
+\section{Dynamics Objective $J_{\text{dyn}}$}
+Define
+\begin{align}
+\operatorname{MM}(q,m) &= \frac{\sum q\,m}{\sum m+\varepsilon},
+&
+\phi(q;q_{\max},m) &= \operatorname{MM}(\operatorname{ReLU}(q-q_{\max})^2,m).
+\end{align}
+
+From sampled velocity sequence $\{\bm{v}_t\}_{t=1}^{H}$:
+\begin{align}
+\bm{a}_t &= \frac{\bm{v}_t-\bm{v}_{t-1}}{\Delta t},
+&
+\bm{j}_t &= \frac{\bm{a}_t-\bm{a}_{t-1}}{\Delta t},
+\\
+\theta_t &= \operatorname{atan2}(v_{t,y},v_{t,x}),
+&
+r_t &= \frac{|\operatorname{wrap}(\theta_t-\theta_{t-1})|}{\Delta t},
+\\
+\bar{s}_t &= \tfrac{1}{2}(\|\bm{v}_t\|+\|\bm{v}_{t-1}\|),
+&
+\kappa_t &= \frac{r_t}{\max(\bar{s}_t,s_{\min})},
+\\
+a^{\text{lat}}_t &= r_t\,\bar{s}_t.
+\end{align}
+
+The objective is a weighted sum of soft-limit penalties:
+\begin{align}
+J_{\text{dyn}}
+&=
+w_a\,\phi(\|\bm{a}\|;a_{\max},m_{\text{move}})
++w_j\,\phi(\|\bm{j}\|;j_{\max},m_{\text{jerk}})
++w_r\,\operatorname{MM}(\operatorname{ReLU}(r-r_{\lim})^2,\mathbf{1})
+\nonumber\\
+&\quad
++w_\kappa\,\phi(\kappa;\kappa_{\max},m_{\text{move}})
++w_{\text{lat}}\,\phi(a^{\text{lat}};a^{\text{lat}}_{\max},m_{\text{move}})
++w_{\text{slip}}\,\phi(\rho;\rho_{\max},m_{\text{move}})
+\nonumber\\
+&\quad
++w_{\text{rev}}\,\operatorname{MM}\!\left(\operatorname{ReLU}(-( \bm{v}\!\cdot\!\bm{d}_{\text{travel}}+\tau_{\text{rev}}))^2,m_{\text{speed}}\right)
++w_{\text{low}}\,\operatorname{MM}(r^2,m_{\text{low}}).
+\end{align}
+
+If bicycle-curvature mode is enabled:
+\begin{align}
+\kappa_{\text{bicycle}} = \frac{\tan(\delta_{\max})}{L},\qquad
+\kappa_{\lim} = \min(\kappa_{\text{cfg}},\kappa_{\text{bicycle}}).
+\end{align}
+
+\section{Collision-Mode Objective $J_{\text{col}}$ (Optional)}
+Adversary rollout from sampled velocity:
+\begin{align}
+\bm{p}^{\text{adv}}_t
+=
+\bm{p}^{\text{adv}}_0+\sum_{\tau=1}^{t}\bm{v}^{\text{adv}}_{\tau}\Delta t.
+\end{align}
+
+Target contact point from mode index (11--53):
+\begin{align}
+\bm{p}^{\text{contact}}_t
+=
+\bm{p}^{\text{target}}_t
++R(\psi^{\text{target}}_t)\Delta\bm{p}_{\text{mode}}(L,W),\quad
+d_t^2=\|\bm{p}^{\text{adv}}_t-\bm{p}^{\text{contact}}_t\|^2.
+\end{align}
+
+With softmin over time:
+\begin{align}
+\alpha_t = \operatorname{softmax}\!\left(-\frac{d_t^2}{\tau}\right),\quad
+\tilde{d}^2=\sum_t \alpha_t d_t^2,\quad
+J_{\text{col}} = w_{\text{col}}\mathbb{E}\!\left[\frac{\tilde{d}^2}{\sigma^2}\right].
+\end{align}
+Optional approach and closing-speed terms are added in code.
+
+\section{Algorithm Summary}
+\begin{enumerate}
+\item Compute base reverse update (DDPM or DDIM).
+\item If guidance condition is met, convert to physical velocity.
+\item Evaluate $J_{\text{dyn}}(+J_{\text{col}})$.
+\item Update sample by gradient descent in sample space.
+\item Continue reverse loop to $t=0$.
+\end{enumerate}
+
+\section{Interpretation}
+Dynamics guidance is \textbf{inference-time control} on sampled trajectories.
+It biases generated trajectories without directly changing model weights in that reverse step.
+
+\end{document}

@@ -1,0 +1,135 @@
+############ MAT_VIZ Run Config #############
+# This file is intended for mat_viz.py runs.
+# Checkpoint is selected only by viz_ckpt_dir + viz_ckpt_name.
+# mat_viz runtime-only options (all previous CLI args moved here)
+# dataset: set explicitly (e.g., mat_collision) or leave empty to infer from ckpt name.
+dataset: "mat_collision_notcol"
+viz_ckpt_dir: matviz/pt
+viz_ckpt_name: "mat_collision_epoch220.pt"
+viz_output_dir: matviz/results
+viz_seed: 0
+viz_epoch_tag: null
+car_width: 1.825
+car_length: 4.650
+# mat data sampling time
+data_dt: 0.02
+# optional second-based horizon config (converted to steps by data_dt)
+history_sec: 0.6
+prediction_sec: 0.9
+
+# Training 
+viz_num_examples: 30
+viz_num_samples: 5
+# prediction/generation targets: 1=target only (ego fixed), 2=ego+target
+viz_predict_agents: 1
+viz_vehicle_boxes_enabled: True
+viz_vehicle_box_center_enabled: True
+viz_vehicle_box_yaw_arrow_enabled: True
+viz_vehicle_box_yaw_arrow_scale: 0.2
+
+# training params
+lr: 0.001
+grad_clip: 1.0
+data_dir: processed_data
+diffnet: TransformerConcatLinear #TransformerConcatLinear
+encoder_dim: 256
+tf_layer: 3
+epochs: 500
+batch_size: 256
+eval_batch_size: 256
+k_eval: 25
+seed: 123
+eval_every: 0
+# Testing
+eval_at: 100
+eval_mode: True
+# set to "ddim" to enable fast sampling
+sampling: ddpm
+
+# dynamics guidance during denoising (x_{t-1} <- x_{t-1} - lambda * grad G)
+dynamics_guidance_enabled: True
+dynamics_guidance_scale: 0.035
+dynamics_guidance_start_ratio: 0.0
+dynamics_guidance_inner_steps: 2
+dynamics_guidance_max_grad_norm: 4.0
+dynamics_guidance_eps: 1.0e-6
+dynamics_guidance_min_speed: 0.0
+dynamics_guidance_max_accel: 6.0
+dynamics_guidance_max_jerk: 8.0
+dynamics_guidance_max_yaw_rate: 0.6
+dynamics_guidance_max_curvature: 0.25
+dynamics_guidance_max_lateral_accel: 4.5
+dynamics_guidance_max_slip_ratio: 3.0
+dynamics_guidance_reverse_tolerance: 0.25
+dynamics_guidance_weight_accel: 0.20
+dynamics_guidance_weight_jerk: 0.10
+dynamics_guidance_weight_yaw_rate: 0.15
+dynamics_guidance_weight_curvature: 0.25
+dynamics_guidance_weight_lateral_accel: 0.20
+dynamics_guidance_weight_slip: 0.05
+dynamics_guidance_weight_reverse: 0.0
+
+dynamics_guidance_use_bicycle_curvature: True
+dynamics_guidance_wheelbase: 2.70
+dynamics_guidance_max_steer_deg: 32.0
+dynamics_guidance_low_speed_yaw_weight: 0.6
+dynamics_guidance_low_speed_yaw_threshold: 0.3
+
+# collision guidance (used when reference trajectory is provided at sampling time)
+collision_guidance_enabled: True
+collision_guidance_weight_close: 100.0
+collision_guidance_weight_hit: 3500.0
+collision_guidance_close_dist: 0.0
+collision_guidance_target_dist: 0.0
+collision_guidance_focus_ratio: 1.0
+collision_guidance_softmin_temp: 0.30
+# collision-only sampling controls (used when dynamics_guidance_enabled=False)
+collision_guidance_global_scale: 500
+collision_guidance_sampling_scale: 0.12
+collision_guidance_start_ratio: 0.0
+collision_guidance_inner_steps: 1
+collision_guidance_max_grad_norm: 6.0
+# per-sample diversity jitter for collision guidance
+collision_guidance_scale_jitter: 2.0
+collision_guidance_target_dist_jitter: 2.0
+collision_guidance_close_dist_jitter: 1.0
+# sampling diversity
+sampling_xt_temperature: 1.0
+viz_sampling_flexibility: 0.0
+
+# yaw auxiliary supervision during training
+yaw_loss_enabled: True
+yaw_loss_weight: 0.1
+yaw_loss_min_speed: 0.5
+yaw_loss_speed_eps: 1.0e-6
+
+# bicycle-based rollout projection for generated trajectories
+bicycle_rollout_enabled: True
+bicycle_rollout_wheelbase: 2.70
+bicycle_rollout_max_steer_deg: 32.0
+bicycle_rollout_low_speed_threshold: 0.3
+############### Trajectron++ Config #################
+# misc
+conf: None
+debug: False
+preprocess_workers: 0
+# model parameters
+offline_scene_graph: yes
+dynamic_edges: yes
+edge_state_combine_method: sum
+edge_influence_combine_method: attention
+edge_addition_filter: [0.25, 0.5, 0.75, 1.0]
+edge_removal_filter: [1.0, 0.0]
+override_attention_radius: []
+incl_robot_node: False
+map_encoding: False
+augment: False
+node_freq_mult_train: False
+node_freq_mult_eval: False
+scene_freq_mult_train: False
+scene_freq_mult_eval: False
+scene_freq_mult_viz: False
+no_edge_encoding: False
+# Data Parameters:
+device: cuda
+eval_device: None

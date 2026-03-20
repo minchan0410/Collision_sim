@@ -100,7 +100,9 @@ class MID():
                 numeric_nodes.append((numeric_id, node))
 
         if not numeric_nodes:
-            return None
+            if len(scene_nodes) == 0:
+                return None
+            return sorted(scene_nodes, key=self._node_sort_tuple)[0]
 
         # mat_preprocess/mat2txt.py 기준:
         #   next_track_id = 1 에서 시작하고 Ego를 먼저 rows에 기록한 뒤,
@@ -218,6 +220,22 @@ class MID():
 
         yaws[-1] = prev_yaw
         return yaws
+
+    def _build_collision_guidance_override(self, reference_future_xy):
+        if not bool(getattr(self.config, "collision_guidance_enabled", False)):
+            return None
+
+        if reference_future_xy is None:
+            return None
+
+        ref = np.asarray(reference_future_xy, dtype=np.float32)
+        if ref.ndim != 2 or ref.shape[0] <= 0 or ref.shape[1] != 2:
+            return None
+
+        return {
+            "collision_enabled": True,
+            "collision_reference_positions": ref,
+        }
 
     @staticmethod
     def _draw_vehicle_rectangles(
@@ -948,6 +966,7 @@ class MID():
 
         num_samples = getattr(self.config, "viz_num_samples", 50)
         sampling = getattr(self.config, "sampling", "ddpm")
+        sampling_flexibility = float(getattr(self.config, "viz_sampling_flexibility", 0.0))
         car_width = float(getattr(self.config, "car_width", 1.825))
         car_length = float(getattr(self.config, "car_length", 4.650))
         draw_vehicle_boxes = bool(getattr(self.config, "viz_vehicle_boxes_enabled", True))
@@ -955,17 +974,10 @@ class MID():
         box_center_enabled = bool(getattr(self.config, "viz_vehicle_box_center_enabled", True))
         box_yaw_arrow_enabled = bool(getattr(self.config, "viz_vehicle_box_yaw_arrow_enabled", True))
         box_yaw_arrow_scale = float(getattr(self.config, "viz_vehicle_box_yaw_arrow_scale", 0.2))
-        viz_collision_mode_guidance = bool(getattr(self.config, "viz_collision_mode_guidance_enabled", False))
-        viz_collision_mode_guidance_apply_to_ego = bool(
-            getattr(self.config, "viz_collision_mode_guidance_apply_to_ego", False)
-        )
-        viz_collision_mode_id = int(
-            getattr(
-                self.config,
-                "viz_collision_mode_guidance_mode",
-                getattr(self.config, "collision_mode_guidance_mode", 11),
-            )
-        )
+        viz_predict_agents = int(getattr(self.config, "viz_predict_agents", 2))
+        if viz_predict_agents not in (1, 2):
+            viz_predict_agents = 2
+        predict_target_only = (viz_predict_agents == 1)
 
         ph = self.ph
         min_hl = self.min_hl
@@ -1021,6 +1033,8 @@ class MID():
             raw_nodes_at_t = list(present[t])
             role_labels = self._resolve_visual_role_labels(scene, raw_nodes_at_t)
             ego_node = self._resolve_scene_ego_node(scene)
+            if (ego_node is None or ego_node not in raw_nodes_at_t) and len(raw_nodes_at_t) > 0:
+                ego_node = sorted(raw_nodes_at_t, key=self._node_sort_tuple)[0]
 
             nodes_at_t = sorted(
                 raw_nodes_at_t,
@@ -1034,27 +1048,11 @@ class MID():
             fig, ax = plt.subplots(figsize=(10, 10))
             all_points_for_scale = []
             node_viz_data = []
-            ego_guidance_state = None
-            if viz_collision_mode_guidance and (ego_node is not None):
-                ego_hist = ego_node.get(np.array([t - max_hl, t]), {'position': ['x', 'y']})
-                ego_hist = ego_hist[~np.isnan(ego_hist).any(axis=1)]
-                if len(ego_hist) >= 1:
-                    ego_hist_yaw = self._compute_yaw_from_positions(ego_hist)
-                    ego_yaw_now = float(ego_hist_yaw[-1]) if len(ego_hist_yaw) > 0 else 0.0
-                    if len(ego_hist) >= 2:
-                        dt_scene_default = float(self.config.data_dt)
-                        dt_scene = max(float(getattr(scene, "dt", dt_scene_default)), 1e-6)
-                        ego_vel_now = (ego_hist[-1] - ego_hist[-2]) / dt_scene
-                    else:
-                        ego_vel_now = np.zeros((2,), dtype=np.float32)
-                    ego_guidance_state = {
-                        "pos": np.asarray(ego_hist[-1], dtype=np.float32),
-                        "yaw": float(ego_yaw_now),
-                        "vel": np.asarray(ego_vel_now, dtype=np.float32),
-                    }
+            ego_reference_future = None
 
             for node_idx, node in enumerate(nodes_at_t):
                 colors = self._get_vehicle_color_set(node_idx)
+                is_ego_node = (node is ego_node)
 
                 history = node.get(np.array([t - max_hl, t]), {'position': ['x', 'y']})
                 future = node.get(np.array([t + 1, t + ph]), {'position': ['x', 'y']})
@@ -1092,71 +1090,79 @@ class MID():
                 )
                 batch = collate([item])
 
-                guidance_override = None
-                if viz_collision_mode_guidance and (ego_guidance_state is not None):
-                    if (node is not ego_node) or viz_collision_mode_guidance_apply_to_ego:
-                        guidance_override = {
-                            "enabled": True,
-                            "collision_mode_enabled": True,
-                            "collision_mode_id": viz_collision_mode_id,
-                            "collision_mode_target_position": ego_guidance_state["pos"],
-                            "collision_mode_target_yaw": ego_guidance_state["yaw"],
-                            "collision_mode_target_velocity": ego_guidance_state["vel"],
-                            "collision_mode_target_length": car_length,
-                            "collision_mode_target_width": car_width,
-                        }
-
-                with torch.no_grad():
-                    pred_pack = self.model.generate(
-                        batch,
-                        node.type,
-                        num_points=ph,
-                        sample=num_samples,
-                        bestof=True,
-                        sampling=sampling,
-                        step=1,
-                        return_dynamics=True,
-                        guidance_override=guidance_override,
-                    )
-
-                    if isinstance(pred_pack, dict):
-                        predictions = pred_pack["position"][:, 0]    # [S, T, 2]
-                        pred_yaws = pred_pack["yaw"][:, 0]           # [S, T]
-                    else:
-                        predictions = pred_pack[:, 0]                # fallback for legacy behavior
-                        pred_yaws = None
-
                 history_yaw = self._compute_yaw_from_positions(history)
                 history_last_yaw = float(history_yaw[-1]) if len(history_yaw) > 0 else 0.0
+                gt_traj = np.vstack((history[-1:], future))
+
+                draw_prediction_paths = True
+                predictions = None
+                pred_yaws = None
+                guidance_override = None
+                if not is_ego_node:
+                    guidance_override = self._build_collision_guidance_override(ego_reference_future)
+                if predict_target_only and is_ego_node:
+                    draw_prediction_paths = False
+                else:
+                    with torch.no_grad():
+                        pred_pack = self.model.generate(
+                            batch,
+                            node.type,
+                            num_points=ph,
+                            sample=num_samples,
+                            bestof=True,
+                            flexibility=sampling_flexibility,
+                            sampling=sampling,
+                            step=1,
+                            return_dynamics=True,
+                            guidance_override=guidance_override,
+                        )
+
+                        if isinstance(pred_pack, dict):
+                            predictions = pred_pack["position"][:, 0]    # [S, T, 2]
+                            pred_yaws = pred_pack["yaw"][:, 0]           # [S, T]
+                        else:
+                            predictions = pred_pack[:, 0]                # fallback for legacy behavior
+                            pred_yaws = None
 
                 pred_items = []
-                for pred_idx, pred in enumerate(predictions):
-                    pred_traj = np.vstack((history[-1:], pred))
-                    if pred_yaws is not None:
-                        pred_yaw_full = np.concatenate(
-                            [np.array([history_last_yaw], dtype=np.float32), pred_yaws[pred_idx]],
-                            axis=0,
-                        )
+                if draw_prediction_paths and predictions is not None:
+                    for pred_idx, pred in enumerate(predictions):
+                        pred_traj = np.vstack((history[-1:], pred))
+                        if pred_yaws is not None:
+                            pred_yaw_full = np.concatenate(
+                                [np.array([history_last_yaw], dtype=np.float32), pred_yaws[pred_idx]],
+                                axis=0,
+                            )
+                        else:
+                            pred_yaw_full = self._compute_yaw_from_positions(pred_traj, default_yaw=history_last_yaw)
+                        pred_items.append((pred_traj, pred_yaw_full))
+                else:
+                    ego_fixed_yaw = self._compute_yaw_from_positions(gt_traj, default_yaw=history_last_yaw)
+                    pred_items.append((gt_traj, ego_fixed_yaw))
+
+                if is_ego_node:
+                    if len(pred_items) > 0:
+                        ego_reference_future = np.asarray(pred_items[0][0][1:], dtype=np.float32)
                     else:
-                        pred_yaw_full = self._compute_yaw_from_positions(pred_traj, default_yaw=history_last_yaw)
-                    pred_items.append((pred_traj, pred_yaw_full))
+                        ego_reference_future = np.asarray(gt_traj[1:], dtype=np.float32)
 
                 # Swap GT/Prediction intensity roles for path rendering.
                 pred_draw_color = colors["gt"]
                 gt_draw_color = colors["pred"]
                 shared_path_lw = 1.55
 
-                for pred_traj, _ in pred_items:
-                    ax.plot(
-                        pred_traj[:, 0],
-                        pred_traj[:, 1],
-                        '-o',
-                        color=pred_draw_color,
-                        alpha=0.96,
-                        linewidth=shared_path_lw,
-                        markersize=2.0,
-                        zorder=3,
-                    )
+                if draw_prediction_paths:
+                    for pred_traj, _ in pred_items:
+                        ax.plot(
+                            pred_traj[:, 0],
+                            pred_traj[:, 1],
+                            '-o',
+                            color=pred_draw_color,
+                            alpha=0.96,
+                            linewidth=shared_path_lw,
+                            markersize=2.0,
+                            zorder=3,
+                        )
 
                 ax.plot(
                     history[:, 0],
@@ -1168,7 +1174,6 @@ class MID():
                     zorder=4,
                 )
 
-                gt_traj = np.vstack((history[-1:], future))
                 ax.plot(
                     gt_traj[:, 0],
                     gt_traj[:, 1],
@@ -1210,7 +1215,8 @@ class MID():
 
                 all_points_for_scale.extend(history)
                 all_points_for_scale.extend(future)
-                all_points_for_scale.extend(predictions.reshape(-1, 2))
+                if draw_prediction_paths and predictions is not None:
+                    all_points_for_scale.extend(predictions.reshape(-1, 2))
 
             if draw_vehicle_boxes and len(node_viz_data) > 0:
                 representative = []
@@ -1339,21 +1345,22 @@ class MID():
                                 car_length=car_length,
                                 car_width=car_width,
                             )
-                        mode_to_draw = int(inferred_mode) if inferred_mode is not None else int(viz_collision_mode_id)
-                        _ = self._draw_collision_mode_grid(
-                            ax=ax,
-                            center_xy=ego_rec["traj"][t_e],
-                            yaw=ego_rec["yaw"][t_e],
-                            car_length=car_length,
-                            car_width=car_width,
-                            mode_id=mode_to_draw,
-                            cell_color="#ff2d2d",
-                            cell_alpha=0.66,
-                            grid_color="black",
-                            grid_alpha=0.62,
-                            grid_linewidth=0.55,
-                            zorder=6.1,
-                        )
+                        mode_to_draw = int(inferred_mode) if inferred_mode is not None else None
+                        if mode_to_draw is not None:
+                            _ = self._draw_collision_mode_grid(
+                                ax=ax,
+                                center_xy=ego_rec["traj"][t_e],
+                                yaw=ego_rec["yaw"][t_e],
+                                car_length=car_length,
+                                car_width=car_width,
+                                mode_id=mode_to_draw,
+                                cell_color="#ff2d2d",
+                                cell_alpha=0.66,
+                                grid_color="black",
+                                grid_alpha=0.62,
+                                grid_linewidth=0.55,
+                                zorder=6.1,
+                            )
 
                         contact_world = collision_event.get("contact_world", None)
                         if contact_world is not None:
@@ -1374,7 +1381,7 @@ class MID():
                         print(
                             f"    [collision-box] {ego_label} & {opp_label} "
                             f"at pred_idx={int(t_draw)} (scene_t={int(t + t_draw)}), "
-                            f"requested_mode={int(viz_collision_mode_id)}, inferred_mode={int(mode_to_draw)}"
+                            f"inferred_mode={mode_to_draw}"
                         )
 
             if len(all_points_for_scale) == 0:
@@ -1507,9 +1514,19 @@ class MID():
         self._build_encoder_config()
         self._build_encoder()
         self._build_model()
-        self._build_train_loader()
+        if self.config.eval_mode:
+            self.train_scenes = []
+            self.train_scenes_sample_probs = None
+            self.train_dataset = None
+            self.train_data_loader = dict()
+        else:
+            self._build_train_loader()
         self._build_eval_loader()
-        self._build_optimizer()
+        if self.config.eval_mode:
+            self.optimizer = None
+            self.scheduler = None
+        else:
+            self._build_optimizer()
 
         # self._build_offline_scene_graph()
         print("> Everything built. Have fun :)")
@@ -1570,11 +1587,20 @@ class MID():
                 map_location="cpu"
             )
             self.registrar.load_models(self.checkpoint['encoder'])
-
-        with open(self.train_data_path, 'rb') as f:
-            self.train_env = dill.load(f, encoding='latin1')
-        with open(self.eval_data_path, 'rb') as f:
-            self.eval_env = dill.load(f, encoding='latin1')
+            with open(self.eval_data_path, 'rb') as f:
+                self.eval_env = dill.load(f, encoding='latin1')
+            if osp.exists(self.train_data_path):
+                with open(self.train_data_path, 'rb') as f:
+                    self.train_env = dill.load(f, encoding='latin1')
+            else:
+                print(f"[Warn] Missing train pkl in eval_mode: {self.train_data_path}")
+                print("[Info] Using eval pkl as train_env for encoder initialization.")
+                self.train_env = self.eval_env
+        else:
+            with open(self.train_data_path, 'rb') as f:
+                self.train_env = dill.load(f, encoding='latin1')
+            with open(self.eval_data_path, 'rb') as f:
+                self.eval_env = dill.load(f, encoding='latin1')
 
     def _build_encoder(self):
         self.encoder = Trajectron(self.registrar, self.hyperparams, "cuda")
