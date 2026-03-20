@@ -10,3 +10,7 @@ mat_viz/results/*
 
 # 제외 확장자
 *.mat
+
+# Ignore PDF files only at repository root (Collision_sim/)
+/*.pdf
+/*.PDF

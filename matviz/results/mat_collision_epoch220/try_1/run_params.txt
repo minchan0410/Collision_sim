@@ -1,4 +1,4 @@
-generated_at: 2026-03-20 14:57:21
+generated_at: 2026-03-20 18:06:59
 status: completed
 image_count: 30
 
@@ -10,7 +10,7 @@ viz_ckpt_name: mat_collision_epoch220.pt
 try_dir: C:\Users\VIC_26\Desktop\Collision_sim\matviz\results\mat_collision_epoch220\try_1
 
 [core]
-dataset: mat_collision_notcol
+dataset: mat_collision_yescol
 checkpoint_epoch: 220
 visualized_epoch: 220
 viz_seed: 0
@@ -60,7 +60,7 @@ dynamics_guidance_wheelbase: 2.7
 [collision_guidance_*]
 collision_guidance_close_dist: 0.0
 collision_guidance_close_dist_jitter: 1.0
-collision_guidance_enabled: True
+collision_guidance_enabled: False
 collision_guidance_focus_ratio: 1.0
 collision_guidance_global_scale: 800
 collision_guidance_inner_steps: 1
@@ -73,6 +73,23 @@ collision_guidance_target_dist: 0.0
 collision_guidance_target_dist_jitter: 2.0
 collision_guidance_weight_close: 100.0
 collision_guidance_weight_hit: 3500.0
+
+[not_collision_guidance_*]
+not_collision_guidance_away_dist: 10
+not_collision_guidance_away_dist_jitter: 2.0
+not_collision_guidance_enabled: True
+not_collision_guidance_focus_ratio: 1.0
+not_collision_guidance_global_scale: 10000.0
+not_collision_guidance_inner_steps: 1
+not_collision_guidance_max_grad_norm: 6.0
+not_collision_guidance_sampling_scale: 0.12
+not_collision_guidance_scale_jitter: 2.0
+not_collision_guidance_softmin_temp: 0.7
+not_collision_guidance_start_ratio: 0.0
+not_collision_guidance_target_dist: 2.0
+not_collision_guidance_target_dist_jitter: 2.0
+not_collision_guidance_weight_away: 1000.0
+not_collision_guidance_weight_clear: 1000.0
 
 [viz_vehicle_box_*]
 viz_vehicle_box_center_enabled: True
@@ -102,7 +119,7 @@ car_length: 4.65
 car_width: 1.825
 collision_guidance_close_dist: 0.0
 collision_guidance_close_dist_jitter: 1.0
-collision_guidance_enabled: True
+collision_guidance_enabled: False
 collision_guidance_focus_ratio: 1.0
 collision_guidance_global_scale: 800
 collision_guidance_inner_steps: 1
@@ -119,7 +136,7 @@ conf: None
 config: C:\Users\VIC_26\Desktop\Collision_sim\configs\run.yaml
 data_dir: processed_data
 data_dt: 0.02
-dataset: mat_collision_notcol
+dataset: mat_collision_yescol
 debug: False
 device: cuda
 diffnet: TransformerConcatLinear
@@ -171,6 +188,21 @@ map_encoding: False
 no_edge_encoding: False
 node_freq_mult_eval: False
 node_freq_mult_train: False
+not_collision_guidance_away_dist: 10
+not_collision_guidance_away_dist_jitter: 2.0
+not_collision_guidance_enabled: True
+not_collision_guidance_focus_ratio: 1.0
+not_collision_guidance_global_scale: 10000.0
+not_collision_guidance_inner_steps: 1
+not_collision_guidance_max_grad_norm: 6.0
+not_collision_guidance_sampling_scale: 0.12
+not_collision_guidance_scale_jitter: 2.0
+not_collision_guidance_softmin_temp: 0.7
+not_collision_guidance_start_ratio: 0.0
+not_collision_guidance_target_dist: 2.0
+not_collision_guidance_target_dist_jitter: 2.0
+not_collision_guidance_weight_away: 1000.0
+not_collision_guidance_weight_clear: 1000.0
 offline_scene_graph: True
 override_attention_radius: []
 prediction_sec: 0.9
@@ -184,6 +216,7 @@ seed: 123
 tf_layer: 3
 viz_ckpt_dir: matviz/pt
 viz_ckpt_name: mat_collision_epoch220.pt
+viz_csv_dir: C:\Users\VIC_26\Desktop\Collision_sim\matviz\results\mat_collision_epoch220\try_1\csv
 viz_epoch_tag: None
 viz_num_examples: 30
 viz_num_samples: 5

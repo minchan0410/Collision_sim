@@ -7,7 +7,7 @@
 
 # 사용할 데이터셋 이름.
 # mat_viz.py에서 비워두면 체크포인트 이름(<dataset>_epochN.pt)에서 자동 추론.
-dataset: "mat_collision_yescol"
+dataset: "mat_collision_notcol"
 
 # 체크포인트가 있는 폴더 경로.
 viz_ckpt_dir: matviz/pt
@@ -137,7 +137,7 @@ dynamics_guidance_low_speed_yaw_threshold: 0.3
 ############ 충돌 가이던스 (J_col) ############
 # 충돌 가이드 on/off.
 # 실제 J_col 계산은 collision_enabled=True 이고 reference trajectory가 있을 때만 유효.
-collision_guidance_enabled: False
+collision_guidance_enabled: True
 # J_col의 close 항 가중치.
 collision_guidance_weight_close: 100.0
 # J_col의 hit 항 가중치.
@@ -167,7 +167,7 @@ collision_guidance_close_dist_jitter: 1.0
 
 # 비충돌(회피) 가이드: 충돌 대신 reference 차량과 거리 확보를 유도합니다.
 # 주의: not_collision_guidance_enabled=True면 내부에서 collision_guidance는 자동 비활성 처리됩니다.
-not_collision_guidance_enabled: True
+not_collision_guidance_enabled: False
 # 가까워지면 밀어내는 항의 가중치(스텝 평균).
 not_collision_guidance_weight_away: 1000.0
 # 최소거리(soft-min) 확보 항의 가중치.
