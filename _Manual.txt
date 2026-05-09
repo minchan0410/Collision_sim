@@ -1,0 +1,86 @@
+## 0. getparam.py ## =====================================================================================================
+
+[getparam?€ ?°ì´?°ì…‹?ì„œ ?œì??¸ì°¨?ë¥?êµ¬í•˜ê³?process_data?ì„œ ?œì?ì°¨ì— ë§ê²Œ ?„ì²˜ë¦??????ˆê²Œ ?˜ëŠ” ?œì??¸ì°¨ ?…ë ¥ê°’ì„ ê³„ì‚°??]
+
+
+?„ë˜ì²˜ëŸ¼ ë³´ì´?”ê²Œ ?˜ì˜¬?ë°. ?´ê±¸ process_data_mat???´ë‹¹?˜ëŠ” x,y?????£ìœ¼ë©???
+
+standardization = {
+    'PEDESTRIAN': {
+        'position': {
+            'x': {'mean': 0, 'std': 31.43},
+            'y': {'mean': 0, 'std': 315.89}
+        },
+        'velocity': {
+            'x': {'mean': 0, 'std': 3.40},
+            'y': {'mean': 0, 'std': 10.66}
+        },
+        'acceleration': {
+            'x': {'mean': 0, 'std': 1.56},
+            'y': {'mean': 0, 'std': 1.78}
+        }
+    }
+}
+
+## 1. process_data(_mat).py ## ==========================================================================================================
+
+[?™ìŠµ???„ìš”??pkl??ë§Œë“¦]
+
+ë§¤íŠ¸???°ì´?°ëŠ” _mat?¼ë¡œ ?´ì•¼ ??
+python process_data.py
+python process_data_mat.py --suffix collision
+--> train_collision test_collision..?¼ë¡œ ?°ì´?°ë? ë§Œë“¦
+
+## main.py ## ==========================================================================================================
+
+2. ?ˆë ¨ ë°?ê²€ì¦?
+[Train]
+
+baseline.yaml?ì„œ "eval_mode: False"ë¡??ê¸°.
+python main.py --config configs/baseline.yaml --dataset univ
+- univ ë§ê³  eth, hotel, zara1, zara2ë¡??´ë„ ?? ?¥ì†Œ???°ë¼ ?¤ë¥´ê²??™ìŠµ???˜ëŠ”ê±°ì„.
+
+
+python main.py --config configs/train.yaml --dataset mat_mini
+pkl ?°ì´?°ì…‹??ê³¨ë¼ ì¤˜ì•¼ ?? mat_mini, mat_collision. ?????„ì²˜ë¦¬ì—??? íƒ???´ë¦„?¼ë¡œ
+
+
+
+
+
+
+
+
+////////////////////////// ?„ë˜ ìª½ì? ?„ì§ ?˜ì •???„ìš”.
+
+
+
+[Test]
+
+baseline.yaml?ì„œ "eval_mode: True"ë¡??ê¸°, eval_at?¼ë¡œ ëª?epochì§œë¦¬ ëª¨ë¸???Œë¦´ì§€ ê²°ì •.
+python main.py --config configs/baseline.yaml --dataset univ 
+?ˆë ¨?´ë‘ ?‘ê°™?? 
+
+## process_data(_mat).py ## ============================================================================================
+
+ê·¸ëƒ¥ ?Œë¦¬ë©??? _mat?€ --suffixë¥??µí•´ mat_~ ?ì„œ ~ ê°€ ?¬ë ¤?ˆìœ¼ë©??´ê±¸ ?ì–´ì¤˜ì•¼ ??
+
+
+## viz.py ## ===========================================================================================================
+
+
+python viz.py --config configs/train.yaml --dataset mat_mini --checkpoint experiments/mat/mat_mini_epoch1.pt --split test --num_examples 2 --num_samples 20 --output_dir output/mat_mini
+
+--config : ?´ë–¤ yaml ?¬ìš©? ì?
+--dataset : ?´ë–¤ ?°ì´?°ì…‹ ?¬ìš©? ì?
+--checkpoint : ?´ë–¤ ì²´í¬?¬ì¸???¬ìš©? ì?
+--split test : ?´ë–¤ ?°ì´?°ì…‹?ì„œ ?ŒìŠ¤?¸í• ì§€
+--num_examples 2 : ëª‡ê°œ ?ŒìŠ¤??
+--num_samples 20 : ???ŒìŠ¤?????˜í”Œ ê²½ë¡œë¥?ëª‡ê°œ ë§Œë“¤ì§€
+--output_dir : output ê²½ë¡œ 
+
+## Timebase (Single Source)
+- Set data_dt in configs/train.yaml.
+- process_data_mat.py / getparam.py use this by default (unless --dt is passed).
+- mat2txt.py also uses it when --target-dt is omitted.
+

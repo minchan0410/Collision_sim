@@ -1,0 +1,12 @@
+catalog_dir: SBEV_Catalog_FNPrecrash
+wrong_sbev_dir: SBEV_Catalog_FNPrecrash/wrong_sbevs
+mat_root: mat_preprocess/mat
+
+names_csv: SBEV_Catalog_FNPrecrash/fnprecrash_image_names.csv
+trajectory_csv_dir: SBEV_Catalog_FNPrecrash/diffusion_input_csv
+
+data_dt: 0.02
+history_sec: 0.6
+default_error_sec: 0.3
+prediction_sec: 0.9
+max_target_distance_m: 30.0

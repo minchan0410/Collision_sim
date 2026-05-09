@@ -1,0 +1,43 @@
+############ MID Training Config ############
+
+# Dataset pkl names:
+#   mat_preprocess/processed_data/<dataset>_train.pkl
+#   mat_preprocess/processed_data/<dataset>_test.pkl
+dataset: mat_collision
+data_dir: mat_preprocess/processed_data
+
+# MAT/MID timebase.
+data_dt: 0.02 # sampling time
+history_sec: 0.6 # 입력
+prediction_sec: 0.9 # 출력
+
+# Model.
+diffnet: TransformerConcatLinear
+encoder_dim: 256
+tf_layer: 3
+
+# Training.
+lr: 0.001
+grad_clip: 1.0
+epochs: 1 # 에폭
+batch_size: 512
+eval_mode: False
+eval_every: 0 # 학습 중 몇 에폭마다 ADE/FDE 평가할지. 0이면 평가 안 함.
+save_pt_every: 1 # 몇 에폭마다 pt 파일 저장할건지
+viz_enabled: False
+tensorboard_enabled: False # True면 experiments/train/events.out.tfevents... 저장
+file_log_enabled: False # True면 experiments/train/<dataset>_날짜.log 저장
+
+# Training auxiliary loss.
+yaw_loss_enabled: True
+yaw_loss_weight: 0.1
+yaw_loss_min_speed: 0.5
+yaw_loss_speed_eps: 1.0e-6
+
+# Data loader / Trajectron compatibility keys used by MID.
+preprocess_workers: 0
+augment: True
+override_attention_radius: []
+incl_robot_node: False
+scene_freq_mult_train: False
+scene_freq_mult_eval: False

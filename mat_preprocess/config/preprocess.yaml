@@ -1,0 +1,56 @@
+# Stage-1 preprocessing config
+
+check:
+  in_root: mat_preprocess/mat # mat 파일 경로
+  out_dir: mat_preprocess/mat_check # 검사 결과 출력 경로
+  workers: 8 # 스레드 개수
+  target_var: data # .mat 아래 저장된 시뮬레이션 변수이름
+  required_fields: # 확인하는 데이터
+    - Time
+    - Car_Con_tx
+    - Car_Con_ty
+    - Car_Yaw
+    - Sensor_Road_Road_Path_tx
+    - Sensor_Road_Road_Path_ty
+    - Sensor_Road_Road_Path_DevAng
+    - Sensor_Road_Road_Path_DevDist
+    - Vhcl_tRoad
+
+mat2txt:
+  in_root: mat_preprocess/mat # mat 파일 경로
+  pass_list: mat_preprocess/mat_check/pass_list.txt # 사용할 pass 결과
+  out_dir: mat_preprocess/mat_txt/all # 출력 경로
+  sampling_time_sec: 0.02 # 샘플링 시간
+
+# Stage-2 preprocessing config
+
+almost_collision:
+  in_root: mat_preprocess/mat_txt/all
+  out_root: mat_preprocess/mat_txt/all_almost_collision
+  enabled: true # 사용 토글
+  single_target_only: true # 차량이 한대인 시나리오에 대해서
+  car_width: 1.825 # 차량 가로
+  car_length: 4.650 # 차량 세로
+  near_dist: 3 # 충돌이 없을 때 Ego-Target 최초 근접 기준 거리(m)
+  before_sec: 2 # 충돌/최초근접 n초 전 부터 사용
+  after_sec: 0 # 충돌/최초근접 n초 이후까지 사용
+
+split_data:
+  in_root: mat_preprocess/mat_txt/all_almost_collision # split 할 txt 데이터 경로
+  out_root: mat_preprocess/mat_txt # train/val/test 폴더 출력 기준 경로
+  train: 8
+  val: 1
+  test: 1
+  suffix: collision # [suffix]_train : 이름 지정
+  use_ratio: 1.0 # 전체 다 사용 : 1 ~ 전체 데이터 중 10%만 사용 : 0.1
+  seed: 42
+
+process_data_mat:
+  mat_txt_root: mat_preprocess/mat_txt # train/val/train 있는 폴더 경로
+  output_dir: mat_preprocess/processed_data # pkl 출력 데이터
+  num_train_augmentations: 4 # 회전 증강 scene 개수
+  standardization:
+    mode: estimate # 사용하는 데이터에 대해 평균 표준편차 등 구해야 함. estimate/fixed fixed : 고정. estimate : 항상 수정
+    scope: train # 훈련에 사용할 데이터
+    min_points_per_track: 3 # 너무 짧게 슬라이싱된 궤적이 있다면 제외
+    save_path: mat_preprocess/processed_data/standardization_collision.yaml # 평균 표준편차 저장되는 경로

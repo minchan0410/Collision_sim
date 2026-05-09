@@ -1,0 +1,38 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Python cache / local environments
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Local raw / intermediate MAT preprocessing data
+mat_preprocess/mat/
+mat_preprocess/mat_check/
+mat_preprocess/mat_txt/
+mat_preprocess/processed_data/
+
+# Generated processed datasets and training artifacts
+experiments/
+mat_run/*
+!mat_run/network/
+!mat_run/network/**
+
+# External reference clone
+MID/
+
+# SBEV catalog generated diffusion inputs/outputs
+make_new_sbev/diffusion_input_csv/
+make_new_sbev/diffusion_generation_result/
+make_new_sbev/diffusion_input_csv/
+make_new_sbev/diffusion_generation_result/
+
