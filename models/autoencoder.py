@@ -3,6 +3,7 @@ import torch
 from torch.nn import Module
 
 import models.diffusion as diffusion
+from models import safesim_guidance
 from models.diffusion import DiffusionTraj, VarianceSchedule
 
 
@@ -22,6 +23,18 @@ class AutoEncoder(Module):
             )
         )
 
+    @staticmethod
+    def _cfg_get(obj, path, default=None):
+        cur = obj
+        for key in path:
+            if cur is None:
+                return default
+            if isinstance(cur, dict):
+                cur = cur.get(key, default)
+            else:
+                cur = getattr(cur, key, default)
+        return cur
+
     def _build_dynamics_guidance(self, dynamics, velocity_std):
         dynamics_enabled = bool(getattr(self.config, "dynamics_guidance_enabled", False))
         collision_enabled = bool(getattr(self.config, "collision_guidance_enabled", False))
@@ -38,7 +51,13 @@ class AutoEncoder(Module):
             initial_position = dynamics.initial_conditions.get("pos", None)
 
         dyn_w = 1.0 if dynamics_enabled else 0.0
-        if dynamics_enabled:
+        interaction_enabled = collision_enabled or not_collision_enabled
+        if interaction_enabled:
+            guidance_scale = float(self._cfg_get(self.config, ["safesim_guidance", "params", "inner_lr"], 0.2))
+            guidance_start_ratio = 0.0
+            guidance_inner_steps = int(self._cfg_get(self.config, ["safesim_guidance", "params", "n_guide_steps"], 1))
+            guidance_max_grad_norm = float(getattr(self.config, "dynamics_guidance_max_grad_norm", 6.0))
+        elif dynamics_enabled:
             guidance_scale = float(getattr(self.config, "dynamics_guidance_scale", 0.03))
             guidance_start_ratio = 0.0
             guidance_inner_steps = int(getattr(self.config, "dynamics_guidance_inner_steps", 1))
@@ -49,11 +68,32 @@ class AutoEncoder(Module):
             guidance_inner_steps = int(getattr(self.config, "heading_guidance_inner_steps", 1))
             guidance_max_grad_norm = float(getattr(self.config, "heading_guidance_max_grad_norm", 4.0))
         else:
-            # Allow interaction-only guidance even when dynamics_guidance_enabled=False.
-            guidance_scale = float(getattr(self.config, "ttc_guidance_sampling_scale", 0.12))
-            guidance_start_ratio = float(getattr(self.config, "ttc_guidance_start_ratio", 0.0))
-            guidance_inner_steps = int(getattr(self.config, "ttc_guidance_inner_steps", 1))
-            guidance_max_grad_norm = float(getattr(self.config, "ttc_guidance_max_grad_norm", 6.0))
+            # Interaction-only SafeSim TTC guidance uses fixed sampling-loop defaults.
+            guidance_scale = 0.12
+            guidance_start_ratio = 0.0
+            guidance_inner_steps = 1
+            guidance_max_grad_norm = 6.0
+
+        ttc_time_bandwidth = self._cfg_get(
+            self.config,
+            ["safesim_guidance", "ttc", "time_bandwidth"],
+            getattr(self.config, "safesim_ttc_time_bandwidth", 1.0),
+        )
+        ttc_distance_bandwidth = self._cfg_get(
+            self.config,
+            ["safesim_guidance", "ttc", "distance_bandwidth"],
+            getattr(self.config, "safesim_ttc_distance_bandwidth", 1.0),
+        )
+        ttc_min_velocity_diff = self._cfg_get(
+            self.config,
+            ["safesim_guidance", "ttc", "min_velocity_diff"],
+            getattr(self.config, "safesim_ttc_min_velocity_diff", 0.1),
+        )
+        cause_adv_term_weight = self._cfg_get(
+            self.config,
+            ["safesim_guidance", "causecollision", "adv_term_weight"],
+            {"distance": 1.0, "speed_penalty": 0.0, "filtered_distance": 0.1},
+        )
 
         return {
             "enabled": True,
@@ -87,43 +127,51 @@ class AutoEncoder(Module):
             "collision_enabled": bool(getattr(self.config, "collision_guidance_enabled", False))
                                 and not bool(getattr(self.config, "not_collision_guidance_enabled", False)),
             "not_collision_enabled": bool(getattr(self.config, "not_collision_guidance_enabled", False)),
-            "ttc_focus_ratio": float(getattr(self.config, "ttc_guidance_focus_ratio", 1.0)),
-            "ttc_collision_distance": float(getattr(self.config, "ttc_collision_distance", 0.75)),
-            "ttc_collision_time": float(getattr(self.config, "ttc_collision_time", 0.6)),
-            "ttc_collision_min_closing_speed": float(getattr(self.config, "ttc_collision_min_closing_speed", 0.75)),
-            "ttc_safe_distance": float(getattr(self.config, "ttc_safe_distance", 4.0)),
-            "ttc_safe_time": float(getattr(self.config, "ttc_safe_time", 2.0)),
-            "ttc_safe_max_closing_speed": float(getattr(self.config, "ttc_safe_max_closing_speed", 0.25)),
-            "ttc_safe_rel_speed": float(getattr(self.config, "ttc_safe_rel_speed", 0.0)),
-            "ttc_weight_distance": float(getattr(self.config, "ttc_weight_distance", 1.0)),
-            "ttc_weight_time": float(getattr(self.config, "ttc_weight_time", 1.0)),
-            "ttc_weight_rel_speed": float(getattr(self.config, "ttc_weight_rel_speed", 0.5)),
-            "ttc_collision_scale": float(
-                getattr(
-                    self.config,
-                    "ttc_collision_scale",
-                    getattr(self.config, "collision_guidance_global_scale", 1.0),
-                )
+            "sample_filter_enabled": bool(self._cfg_get(self.config, ["safesim_guidance", "params", "sample_filter_enabled"], True)),
+            "ttc_time_bandwidth": float(ttc_time_bandwidth),
+            "ttc_distance_bandwidth": float(ttc_distance_bandwidth),
+            "ttc_min_velocity_diff": float(ttc_min_velocity_diff),
+            "ttc_loss_timesteps": self._cfg_get(self.config, ["safesim_guidance", "ttc", "loss_timesteps"], None),
+            "ttc_filter_timesteps": self._cfg_get(self.config, ["safesim_guidance", "ttc", "filter_timesteps"], None),
+            "ttc_loss_scale": float(self._cfg_get(self.config, ["safesim_guidance", "ttc", "loss_scale"], 1.0)),
+            "ttc_mode": self._cfg_get(self.config, ["safesim_guidance", "ttc", "mode"], "ego_target"),
+            "causecollision_prediction_mode": self._cfg_get(
+                self.config, ["safesim_guidance", "causecollision", "prediction_mode"], "ego_plan"
             ),
-            "ttc_not_collision_scale": float(
-                getattr(
-                    self.config,
-                    "ttc_not_collision_scale",
-                    getattr(self.config, "not_collision_guidance_global_scale", 1.0),
-                )
+            "causecollision_loss_timesteps": self._cfg_get(
+                self.config, ["safesim_guidance", "causecollision", "loss_timesteps"], 20
             ),
-            "ttc_scale_jitter": float(getattr(self.config, "ttc_guidance_scale_jitter", 0.0)),
-            "ttc_distance_softmin_temp": float(getattr(self.config, "ttc_distance_softmin_temp", 0.25)),
-            "ttc_time_softmin_temp": float(getattr(self.config, "ttc_time_softmin_temp", 0.15)),
-            "ttc_speed_softmax_temp": float(getattr(self.config, "ttc_speed_softmax_temp", 0.25)),
-            "ttc_near_distance_temp": float(getattr(self.config, "ttc_near_distance_temp", 0.5)),
-            "ttc_closing_gate_temp": float(getattr(self.config, "ttc_closing_gate_temp", 0.25)),
-            "ttc_closing_softplus_beta": float(getattr(self.config, "ttc_closing_softplus_beta", 5.0)),
-            "safesim_ttc_time_bandwidth": float(getattr(self.config, "safesim_ttc_time_bandwidth", 1.0)),
-            "safesim_ttc_distance_bandwidth": float(getattr(self.config, "safesim_ttc_distance_bandwidth", 1.0)),
-            "safesim_ttc_min_velocity_diff": float(getattr(self.config, "safesim_ttc_min_velocity_diff", 0.1)),
-            "safesim_collision_rel_speed_target": float(getattr(self.config, "safesim_collision_rel_speed_target", 0.0)),
-            "safesim_not_collision_danger_margin": float(getattr(self.config, "safesim_not_collision_danger_margin", 0.15)),
+            "causecollision_filter_timesteps": self._cfg_get(
+                self.config, ["safesim_guidance", "causecollision", "filter_timesteps"], 20
+            ),
+            "causecollision_loss_scale": float(self._cfg_get(
+                self.config, ["safesim_guidance", "causecollision", "loss_scale"], 1.0
+            )),
+            "causecollision_adv_term_weight": cause_adv_term_weight,
+            "causecollision_interact_mode": self._cfg_get(
+                self.config, ["safesim_guidance", "causecollision", "interact_mode"], "distance"
+            ),
+            "causecollision_adv_bound": float(self._cfg_get(
+                self.config, ["safesim_guidance", "causecollision", "adv_bound"], 30.0
+            )),
+            "causecollision_speed_diff": float(self._cfg_get(
+                self.config, ["safesim_guidance", "causecollision", "speed_diff"], 2.0
+            )),
+            "causecollision_interact_dist_thresh": float(self._cfg_get(
+                self.config, ["safesim_guidance", "causecollision", "interact_dist_thresh"], 100.0
+            )),
+            "local_noncollision_safe_distance": float(self._cfg_get(
+                self.config, ["local_noncollision", "safe_distance"], 4.0
+            )),
+            "local_noncollision_loss_timesteps": self._cfg_get(
+                self.config, ["local_noncollision", "loss_timesteps"], None
+            ),
+            "local_noncollision_filter_timesteps": self._cfg_get(
+                self.config, ["local_noncollision", "filter_timesteps"], None
+            ),
+            "local_noncollision_loss_scale": float(self._cfg_get(
+                self.config, ["local_noncollision", "loss_scale"], 1.0
+            )),
             "xT_temperature": float(getattr(self.config, "sampling_xt_temperature", 1.0)),
         }
 
@@ -293,6 +341,119 @@ class AutoEncoder(Module):
         projected_yaw = torch.stack(proj_yaw, dim=2)  # [S, B, T]
         return projected_pos, projected_vel, projected_yaw
 
+    @staticmethod
+    def _broadcast_reference_positions(ref_pos, batch, horizon, device, dtype):
+        if ref_pos is None:
+            return None
+        if not torch.is_tensor(ref_pos):
+            ref_pos = torch.tensor(ref_pos, device=device, dtype=dtype)
+        else:
+            ref_pos = ref_pos.to(device=device, dtype=dtype)
+        if ref_pos.dim() == 2 and ref_pos.size(-1) == 2:
+            ref_pos = ref_pos.unsqueeze(0)
+        if ref_pos.dim() != 3 or ref_pos.size(-1) != 2:
+            return None
+        if ref_pos.size(0) == 1 and batch > 1:
+            ref_pos = ref_pos.expand(batch, -1, -1)
+        elif ref_pos.size(0) != batch:
+            ref_pos = ref_pos[:batch]
+        if ref_pos.size(1) <= 0:
+            return None
+        return ref_pos[:, :horizon]
+
+    @staticmethod
+    def _gather_sample_order(value, order):
+        if value is None:
+            return None
+        index_shape = list(order.shape) + [1] * (value.dim() - 2)
+        expand_shape = list(order.shape) + list(value.shape[2:])
+        index = order.view(*index_shape).expand(*expand_shape)
+        return torch.gather(value, dim=0, index=index)
+
+    def _rank_guided_samples(self, predicted_y_pos, predicted_y_vel, speed, yaw, guidance):
+        if not isinstance(guidance, dict) or not bool(guidance.get("sample_filter_enabled", True)):
+            return predicted_y_pos, predicted_y_vel, speed, yaw
+
+        collision_enabled = bool(guidance.get("collision_enabled", False))
+        not_collision_enabled = bool(guidance.get("not_collision_enabled", False))
+        if collision_enabled and not_collision_enabled:
+            collision_enabled = False
+        if (not collision_enabled) and (not not_collision_enabled):
+            return predicted_y_pos, predicted_y_vel, speed, yaw
+
+        samples, batch, horizon, _ = predicted_y_pos.shape
+        ref_pos = self._broadcast_reference_positions(
+            guidance.get("collision_reference_positions", None),
+            batch=batch,
+            horizon=horizon,
+            device=predicted_y_pos.device,
+            dtype=predicted_y_pos.dtype,
+        )
+        if ref_pos is None:
+            return predicted_y_pos, predicted_y_vel, speed, yaw
+
+        min_len = min(horizon, ref_pos.size(1))
+        pred_pos = predicted_y_pos[:, :, :min_len]
+        pred_vel = predicted_y_vel[:, :, :min_len]
+        ref_pos = ref_pos[:, :min_len]
+        dt = max(float(guidance.get("dt", 1.0)), float(guidance.get("eps", 1e-6)))
+        eps = float(guidance.get("eps", 1e-6))
+
+        ref_vel = predicted_y_vel.new_zeros(ref_pos.shape)
+        if ref_pos.size(1) > 1:
+            ref_vel[:, :-1] = (ref_pos[:, 1:] - ref_pos[:, :-1]) / dt
+            ref_vel[:, -1] = ref_vel[:, -2]
+
+        ref_pos_exp = ref_pos.unsqueeze(0).expand(samples, -1, -1, -1)
+        ref_vel_exp = ref_vel.unsqueeze(0).expand(samples, -1, -1, -1)
+        pair = safesim_guidance.compute_pair_kinematics(
+            pred_pos=pred_pos,
+            ref_pos=ref_pos_exp,
+            pred_vel=pred_vel,
+            ref_vel=ref_vel_exp,
+            eps=eps,
+        )
+        if collision_enabled:
+            danger, _, _ = safesim_guidance.compute_safesim_ttc_score(
+                pair["rel_pos"],
+                pair["rel_vel"],
+                time_bandwidth=float(guidance.get("ttc_time_bandwidth", 1.0)),
+                distance_bandwidth=float(guidance.get("ttc_distance_bandwidth", 1.0)),
+                min_velocity_diff=float(guidance.get("ttc_min_velocity_diff", 0.1)),
+                eps=eps,
+            )
+            score = safesim_guidance.collision_sample_score(
+                danger=danger,
+                distance=pair["distance"],
+                ego_speed=torch.norm(ref_vel_exp, dim=-1),
+                ctrl_speed=torch.norm(pred_vel, dim=-1),
+                ttc_filter_timesteps=guidance.get("ttc_filter_timesteps", guidance.get("ttc_loss_timesteps", None)),
+                ttc_loss_scale=float(guidance.get("ttc_loss_scale", 1.0)),
+                causecollision_filter_timesteps=guidance.get(
+                    "causecollision_filter_timesteps", guidance.get("causecollision_loss_timesteps", None)
+                ),
+                causecollision_loss_scale=float(guidance.get("causecollision_loss_scale", 1.0)),
+                causecollision_adv_term_weight=guidance.get("causecollision_adv_term_weight", None),
+                causecollision_adv_bound=float(guidance.get("causecollision_adv_bound", 30.0)),
+                causecollision_speed_diff=float(guidance.get("causecollision_speed_diff", 2.0)),
+                causecollision_interact_dist_thresh=float(guidance.get("causecollision_interact_dist_thresh", 100.0)),
+            )
+        else:
+            score = safesim_guidance.local_noncollision_sample_score(
+                pair["distance"],
+                safe_distance=float(guidance.get("local_noncollision_safe_distance", 4.0)),
+                filter_timesteps=guidance.get("local_noncollision_filter_timesteps", None),
+                loss_scale=float(guidance.get("local_noncollision_loss_scale", 1.0)),
+            )
+
+        score = torch.nan_to_num(score, nan=float("inf"), posinf=float("inf"), neginf=-float("inf"))
+        order = torch.argsort(score, dim=0)
+        predicted_y_pos = self._gather_sample_order(predicted_y_pos, order)
+        predicted_y_vel = self._gather_sample_order(predicted_y_vel, order)
+        speed = self._gather_sample_order(speed, order)
+        yaw = self._gather_sample_order(yaw, order)
+        return predicted_y_pos, predicted_y_vel, speed, yaw
+
     def _compute_yaw_aux_loss(self, pred_vel_phys, gt_vel_phys):
         min_speed = float(getattr(self.config, "yaw_loss_min_speed", 0.5))
         speed_eps = float(getattr(self.config, "yaw_loss_speed_eps", 1e-6))
@@ -361,9 +522,6 @@ class AutoEncoder(Module):
             if rollout is not None:
                 predicted_y_pos, predicted_y_vel, projected_yaw = rollout
 
-        if not return_dynamics:
-            return predicted_y_pos.cpu().detach().numpy()
-
         initial_velocity = None
         if hasattr(dynamics, "initial_conditions") and isinstance(dynamics.initial_conditions, dict):
             initial_velocity = dynamics.initial_conditions.get("vel", None)
@@ -373,6 +531,17 @@ class AutoEncoder(Module):
             yaw = projected_yaw
         else:
             yaw = self._compute_yaw_from_velocity(predicted_y_vel, initial_velocity=initial_velocity)
+
+        predicted_y_pos, predicted_y_vel, speed, yaw = self._rank_guided_samples(
+            predicted_y_pos,
+            predicted_y_vel,
+            speed,
+            yaw,
+            guidance_cfg,
+        )
+
+        if not return_dynamics:
+            return predicted_y_pos.cpu().detach().numpy()
 
         return {
             "position": predicted_y_pos.cpu().detach().numpy(),   # [S, B, T, 2]

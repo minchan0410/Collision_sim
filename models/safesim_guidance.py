@@ -4,9 +4,9 @@ import torch
 def compute_pair_kinematics(pred_pos, ref_pos, pred_vel, ref_vel, eps=1.0e-6):
     rel_pos = pred_pos - ref_pos
     rel_vel = pred_vel - ref_vel
-    distance = torch.norm(rel_pos, dim=-1)
+    distance = torch.norm(rel_pos, dim=-1).clamp_min(eps)
     rel_speed = torch.norm(rel_vel, dim=-1)
-    closing_speed = -torch.sum(rel_pos * rel_vel, dim=-1) / distance.clamp_min(eps)
+    closing_speed = -torch.sum(rel_pos * rel_vel, dim=-1) / distance
     return {
         "rel_pos": rel_pos,
         "rel_vel": rel_vel,
@@ -48,84 +48,203 @@ def compute_safesim_ttc_score(
     return danger, t_col, d_col
 
 
-def _softmin(values, temperature, eps=1.0e-6):
-    temperature = max(float(temperature), eps)
-    weights = torch.softmax(-values / temperature, dim=-1)
-    return torch.sum(values * weights, dim=-1)
+def _select_timesteps(value, timesteps):
+    if timesteps is None:
+        return value
+    horizon = value.size(-1)
+    if horizon <= 0:
+        return value
+
+    if isinstance(timesteps, int):
+        if timesteps <= 0:
+            return value[..., :0]
+        return value[..., : min(timesteps, horizon)]
+
+    if isinstance(timesteps, float):
+        return _select_timesteps(value, int(timesteps))
+
+    if isinstance(timesteps, (list, tuple)):
+        if len(timesteps) == 0:
+            return value
+        index = torch.as_tensor(timesteps, device=value.device, dtype=torch.long)
+        index = torch.clamp(index, 0, horizon - 1)
+        return torch.index_select(value, dim=-1, index=index)
+
+    return value
 
 
-def _softmax(values, temperature, eps=1.0e-6):
-    temperature = max(float(temperature), eps)
-    weights = torch.softmax(values / temperature, dim=-1)
-    return torch.sum(values * weights, dim=-1)
+def _reduce_loss(value, reduction="mean"):
+    if value.numel() == 0:
+        return value.new_tensor(0.0)
+    if reduction == "none":
+        return value
+    if reduction == "sum":
+        return value.sum()
+    return value.mean()
 
 
-def collision_objective(
+def _per_sample_mean(value):
+    if value.numel() == 0:
+        return value.new_zeros(value.shape[:-1])
+    return value.mean(dim=-1)
+
+
+def safesim_ttc_loss(danger, loss_timesteps=None, loss_scale=1.0, reduction="mean"):
+    """SafeSim TTC loss sign: minimizing this increases the TTC danger score."""
+    danger = _select_timesteps(danger, loss_timesteps)
+    loss = -danger
+    return _reduce_loss(loss, reduction=reduction) * float(loss_scale)
+
+
+def calculate_exact_speed_penalty(
     distance,
-    rel_speed,
-    danger,
-    collision_distance=0.75,
-    rel_speed_target=0.75,
-    weight_distance=1.0,
-    weight_ttc=1.0,
-    weight_rel_speed=0.5,
-    distance_temp=0.25,
-    danger_temp=0.15,
-    rel_speed_temp=0.25,
-    eps=1.0e-6,
+    ego_speed,
+    ctrl_speed,
+    exact_diff,
+    distance_threshold=5.0,
+    margin=0.0,
 ):
-    softmin_distance = _softmin(distance, distance_temp, eps=eps)
-    softmax_danger = _softmax(danger, danger_temp, eps=eps)
-
-    distance_penalty = torch.relu(softmin_distance - float(collision_distance)).pow(2).mean()
-    danger_reward = -softmax_danger.mean()
-
-    speed_penalty = distance.new_tensor(0.0)
-    if float(rel_speed_target) > 0.0 and float(weight_rel_speed) != 0.0:
-        softmax_rel_speed = _softmax(rel_speed, rel_speed_temp, eps=eps)
-        speed_penalty = torch.relu(float(rel_speed_target) - softmax_rel_speed).pow(2).mean()
-
-    return (
-        float(weight_distance) * distance_penalty
-        + float(weight_ttc) * danger_reward
-        + float(weight_rel_speed) * speed_penalty
-    )
+    """SafeSim helper: penalize ctrl speed away from ego_speed + exact_diff when close."""
+    close_enough = distance < float(distance_threshold)
+    target_speed = ego_speed + float(exact_diff)
+    speed_difference = torch.abs(ctrl_speed - target_speed)
+    outside_margin = speed_difference > float(margin)
+    return (speed_difference - float(margin)) * close_enough.float() * outside_margin.float()
 
 
-def not_collision_objective(
+def causecollision_loss(
     distance,
-    rel_speed,
-    closing_speed,
-    danger,
-    safe_distance=4.0,
-    safe_max_closing_speed=0.25,
-    rel_speed_limit=0.0,
-    danger_margin=0.15,
-    weight_distance=1.0,
-    weight_ttc=1.0,
-    weight_rel_speed=0.5,
-    near_distance_temp=0.5,
-    closing_gate_temp=0.25,
+    ego_speed,
+    ctrl_speed,
+    adv_term_weight=None,
+    adv_bound=30.0,
+    speed_diff=2.0,
+    interact_dist_thresh=100.0,
+    loss_timesteps=None,
+    loss_scale=1.0,
+    reduction="mean",
 ):
-    near_temp = max(float(near_distance_temp), 1.0e-6)
-    closing_temp = max(float(closing_gate_temp), 1.0e-6)
-    near_gate = torch.sigmoid((float(safe_distance) - distance) / near_temp)
-    closing_gate = torch.sigmoid(closing_speed / closing_temp)
+    """
+    Local ego-target version of SafeSim causecollision.
 
-    distance_penalty = torch.relu(float(safe_distance) - distance).pow(2).mean()
-    danger_penalty = torch.relu(danger - float(danger_margin)).pow(2).mean()
-    closing_penalty = (
-        torch.relu(closing_speed - float(safe_max_closing_speed)).pow(2)
-        * near_gate
-        * closing_gate
-    ).mean()
+    Official SafeSim computes this over ego/control indices inside a multi-agent
+    batch. Here distance is already the selected ego-target distance [B,T].
+    """
+    if adv_term_weight is None:
+        adv_term_weight = {}
+    distance_weight = float(adv_term_weight.get("distance", 1.0))
+    filtered_weight = float(adv_term_weight.get("filtered_distance", 0.1))
+    speed_weight = float(adv_term_weight.get("speed_penalty", 0.0))
 
-    rel_speed_penalty = distance.new_tensor(0.0)
-    if float(rel_speed_limit) > 0.0:
-        rel_speed_penalty = (torch.relu(rel_speed - float(rel_speed_limit)).pow(2) * near_gate).mean()
+    distance = _select_timesteps(distance, loss_timesteps)
+    ego_speed = _select_timesteps(ego_speed, loss_timesteps)
+    ctrl_speed = _select_timesteps(ctrl_speed, loss_timesteps)
+    if distance.numel() == 0:
+        return distance.new_tensor(0.0)
 
-    return (
-        float(weight_distance) * distance_penalty
-        + float(weight_ttc) * danger_penalty
-        + float(weight_rel_speed) * (closing_penalty + rel_speed_penalty)
+    min_distances = torch.min(distance, dim=-1, keepdim=True).values
+    interaction_mask = min_distances < float(interact_dist_thresh)
+    interaction_mask = interaction_mask.expand_as(distance)
+
+    speed_penalty = calculate_exact_speed_penalty(distance, ego_speed, ctrl_speed, speed_diff)
+    distance_term = distance_weight * min_distances.expand_as(distance)
+    speed_term = speed_weight * speed_penalty
+    filtered_term = filtered_weight * distance
+
+    loss = torch.zeros_like(distance)
+    loss[interaction_mask] = (
+        distance_term[interaction_mask]
+        + speed_term[interaction_mask]
+        + filtered_term[interaction_mask]
     )
+    loss = torch.clamp(loss, 0.0, float(adv_bound))
+    return _reduce_loss(loss, reduction=reduction) * float(loss_scale)
+
+
+def local_noncollision_loss(distance, safe_distance=4.0, loss_timesteps=None, loss_scale=1.0, reduction="mean"):
+    """Local extension, not official SafeSim: repel only inside safe_distance."""
+    distance = _select_timesteps(distance, loss_timesteps)
+    penalty = torch.relu(float(safe_distance) - distance).pow(2)
+    return _reduce_loss(penalty, reduction=reduction) * float(loss_scale)
+
+
+def collision_guidance_loss(
+    danger,
+    distance,
+    ego_speed,
+    ctrl_speed,
+    ttc_loss_timesteps=None,
+    ttc_loss_scale=1.0,
+    causecollision_loss_timesteps=None,
+    causecollision_loss_scale=1.0,
+    causecollision_adv_term_weight=None,
+    causecollision_adv_bound=30.0,
+    causecollision_speed_diff=2.0,
+    causecollision_interact_dist_thresh=100.0,
+    reduction="mean",
+):
+    ttc = safesim_ttc_loss(
+        danger,
+        loss_timesteps=ttc_loss_timesteps,
+        loss_scale=ttc_loss_scale,
+        reduction=reduction,
+    )
+    cause = causecollision_loss(
+        distance,
+        ego_speed,
+        ctrl_speed,
+        adv_term_weight=causecollision_adv_term_weight,
+        adv_bound=causecollision_adv_bound,
+        speed_diff=causecollision_speed_diff,
+        interact_dist_thresh=causecollision_interact_dist_thresh,
+        loss_timesteps=causecollision_loss_timesteps,
+        loss_scale=causecollision_loss_scale,
+        reduction=reduction,
+    )
+    return cause + ttc
+
+
+def collision_sample_score(
+    danger,
+    distance,
+    ego_speed,
+    ctrl_speed,
+    ttc_filter_timesteps=None,
+    ttc_loss_scale=1.0,
+    causecollision_filter_timesteps=None,
+    causecollision_loss_scale=1.0,
+    causecollision_adv_term_weight=None,
+    causecollision_adv_bound=30.0,
+    causecollision_speed_diff=2.0,
+    causecollision_interact_dist_thresh=100.0,
+):
+    ttc = safesim_ttc_loss(
+        danger,
+        loss_timesteps=ttc_filter_timesteps,
+        loss_scale=ttc_loss_scale,
+        reduction="none",
+    )
+    cause = causecollision_loss(
+        distance,
+        ego_speed,
+        ctrl_speed,
+        adv_term_weight=causecollision_adv_term_weight,
+        adv_bound=causecollision_adv_bound,
+        speed_diff=causecollision_speed_diff,
+        interact_dist_thresh=causecollision_interact_dist_thresh,
+        loss_timesteps=causecollision_filter_timesteps,
+        loss_scale=causecollision_loss_scale,
+        reduction="none",
+    )
+    return _per_sample_mean(cause) + _per_sample_mean(ttc)
+
+
+def local_noncollision_sample_score(distance, safe_distance=4.0, filter_timesteps=None, loss_scale=1.0):
+    score = local_noncollision_loss(
+        distance,
+        safe_distance=safe_distance,
+        loss_timesteps=filter_timesteps,
+        loss_scale=loss_scale,
+        reduction="none",
+    )
+    return _per_sample_mean(score)

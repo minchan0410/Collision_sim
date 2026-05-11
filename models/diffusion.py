@@ -251,89 +251,45 @@ class DiffusionTraj(Module):
             ref_vel=ref_vel,
             eps=eps,
         )
-        if pair["distance"].numel() == 0:
+        if pair["rel_pos"].numel() == 0:
             return vel_phys.new_tensor(0.0)
 
         danger, _, _ = safesim_guidance.compute_safesim_ttc_score(
             pair["rel_pos"],
             pair["rel_vel"],
-            time_bandwidth=float(guidance.get("safesim_ttc_time_bandwidth", 1.0)),
-            distance_bandwidth=float(guidance.get("safesim_ttc_distance_bandwidth", 1.0)),
-            min_velocity_diff=float(guidance.get("safesim_ttc_min_velocity_diff", 0.1)),
+            time_bandwidth=float(guidance.get("ttc_time_bandwidth", guidance.get("safesim_ttc_time_bandwidth", 1.0))),
+            distance_bandwidth=float(guidance.get("ttc_distance_bandwidth", guidance.get("safesim_ttc_distance_bandwidth", 1.0))),
+            min_velocity_diff=float(guidance.get("ttc_min_velocity_diff", guidance.get("safesim_ttc_min_velocity_diff", 0.1))),
             eps=eps,
         )
 
-        focus_ratio = float(guidance.get("ttc_focus_ratio", 1.0))
-        focus_ratio = min(max(focus_ratio, 0.0), 1.0)
-        focus_steps = max(1, int(round(min_len * focus_ratio)))
-        start_idx = max(0, min_len - focus_steps)
-
-        dist_focus = pair["distance"][:, start_idx:]
-        rel_speed_focus = pair["rel_speed"][:, start_idx:]
-        closing_focus = pair["closing_speed"][:, start_idx:]
-        danger_focus = danger[:, start_idx:]
-
-        temp_dist = max(float(guidance.get("ttc_distance_softmin_temp", 0.25)), eps)
-        temp_danger = max(float(guidance.get("ttc_time_softmin_temp", 0.15)), eps)
-        temp_speed = max(float(guidance.get("ttc_speed_softmax_temp", 0.25)), eps)
-
         if collision_enabled:
-            collision_distance = float(guidance.get("ttc_collision_distance", 0.75))
-            rel_speed_target = float(guidance.get("safesim_collision_rel_speed_target", 0.0))
-            if rel_speed_target <= 0.0:
-                rel_speed_target = float(guidance.get("ttc_collision_min_closing_speed", 0.75))
-
-            weight_dist = float(guidance.get("ttc_weight_distance", 1.0))
-            weight_time = float(guidance.get("ttc_weight_time", 1.0))
-            weight_speed = float(guidance.get("ttc_weight_rel_speed", 0.5))
-
-            col_obj = safesim_guidance.collision_objective(
-                distance=dist_focus,
-                rel_speed=rel_speed_focus,
-                danger=danger_focus,
-                collision_distance=collision_distance,
-                rel_speed_target=rel_speed_target,
-                weight_distance=weight_dist,
-                weight_ttc=weight_time,
-                weight_rel_speed=weight_speed,
-                distance_temp=temp_dist,
-                danger_temp=temp_danger,
-                rel_speed_temp=temp_speed,
-                eps=eps,
+            pred_speed = torch.norm(vel_phys[:, :min_len], dim=-1)
+            ref_speed = torch.norm(ref_vel, dim=-1)
+            objective = objective + safesim_guidance.collision_guidance_loss(
+                danger=danger,
+                distance=pair["distance"],
+                ego_speed=ref_speed,
+                ctrl_speed=pred_speed,
+                ttc_loss_timesteps=guidance.get("ttc_loss_timesteps", None),
+                ttc_loss_scale=float(guidance.get("ttc_loss_scale", 1.0)),
+                causecollision_loss_timesteps=guidance.get("causecollision_loss_timesteps", None),
+                causecollision_loss_scale=float(guidance.get("causecollision_loss_scale", 1.0)),
+                causecollision_adv_term_weight=guidance.get("causecollision_adv_term_weight", None),
+                causecollision_adv_bound=float(guidance.get("causecollision_adv_bound", 30.0)),
+                causecollision_speed_diff=float(guidance.get("causecollision_speed_diff", 2.0)),
+                causecollision_interact_dist_thresh=float(guidance.get("causecollision_interact_dist_thresh", 100.0)),
+                reduction="mean",
             )
-
-            collision_scale = float(guidance.get("ttc_collision_scale", guidance.get("collision_scale", 1.0)))
-            if collision_scale > 0.0:
-                objective = objective + collision_scale * col_obj
 
         if not_collision_enabled:
-            safe_distance = float(guidance.get("ttc_safe_distance", 4.0))
-            safe_closing_speed = float(guidance.get("ttc_safe_max_closing_speed", 0.25))
-
-            weight_dist = float(guidance.get("ttc_weight_distance", 1.0))
-            weight_time = float(guidance.get("ttc_weight_time", 1.0))
-            weight_speed = float(guidance.get("ttc_weight_rel_speed", 0.5))
-
-            rel_speed_limit = float(guidance.get("ttc_safe_rel_speed", 0.0))
-            not_col_obj = safesim_guidance.not_collision_objective(
-                distance=dist_focus,
-                rel_speed=rel_speed_focus,
-                closing_speed=closing_focus,
-                danger=danger_focus,
-                safe_distance=safe_distance,
-                safe_max_closing_speed=safe_closing_speed,
-                rel_speed_limit=rel_speed_limit,
-                danger_margin=float(guidance.get("safesim_not_collision_danger_margin", 0.15)),
-                weight_distance=weight_dist,
-                weight_ttc=weight_time,
-                weight_rel_speed=weight_speed,
-                near_distance_temp=float(guidance.get("ttc_near_distance_temp", 0.5)),
-                closing_gate_temp=float(guidance.get("ttc_closing_gate_temp", 0.25)),
+            objective = objective + safesim_guidance.local_noncollision_loss(
+                pair["distance"],
+                safe_distance=float(guidance.get("local_noncollision_safe_distance", 4.0)),
+                loss_timesteps=guidance.get("local_noncollision_loss_timesteps", None),
+                loss_scale=float(guidance.get("local_noncollision_loss_scale", 1.0)),
+                reduction="mean",
             )
-
-            not_collision_scale = float(guidance.get("ttc_not_collision_scale", guidance.get("not_collision_scale", 1.0)))
-            if not_collision_scale > 0.0:
-                objective = objective + not_collision_scale * not_col_obj
 
         return objective
 
@@ -414,15 +370,6 @@ class DiffusionTraj(Module):
 
         if (not collision_enabled) and (not not_collision_enabled):
             return g
-
-        scale_jitter = max(float(g.get("ttc_scale_jitter", 0.0)), 0.0)
-        if scale_jitter > 0.0:
-            noise = float(torch.randn((), device=device).item()) * scale_jitter
-            multiplier = max(math.exp(noise), 0.0)
-            if collision_enabled:
-                g["ttc_collision_scale"] = max(float(g.get("ttc_collision_scale", 1.0)) * multiplier, 0.0)
-            if not_collision_enabled:
-                g["ttc_not_collision_scale"] = max(float(g.get("ttc_not_collision_scale", 1.0)) * multiplier, 0.0)
 
         return g
 

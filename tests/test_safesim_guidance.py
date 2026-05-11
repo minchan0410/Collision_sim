@@ -1,10 +1,14 @@
 import torch
 
 from models.safesim_guidance import (
-    collision_objective,
+    calculate_exact_speed_penalty,
+    causecollision_loss,
+    collision_sample_score,
     compute_pair_kinematics,
     compute_safesim_ttc_score,
-    not_collision_objective,
+    local_noncollision_loss,
+    local_noncollision_sample_score,
+    safesim_ttc_loss,
 )
 
 
@@ -75,33 +79,65 @@ def test_crossing_approach_responds_to_closest_approach():
     assert torch.allclose(d_col, torch.tensor([[1.0]]), atol=1.0e-5)
 
 
-def test_collision_objective_prefers_dangerous_close_pair():
-    close_distance = torch.tensor([[0.5, 0.4]])
-    close_rel_speed = torch.tensor([[1.0, 1.2]])
+def test_ttc_collision_loss_prefers_dangerous_close_pair():
     close_danger = torch.tensor([[0.8, 0.9]])
 
-    far_distance = torch.tensor([[5.0, 4.5]])
-    far_rel_speed = torch.tensor([[0.1, 0.1]])
     far_danger = torch.tensor([[0.0, 0.0]])
 
-    close_obj = collision_objective(close_distance, close_rel_speed, close_danger)
-    far_obj = collision_objective(far_distance, far_rel_speed, far_danger)
+    close_obj = safesim_ttc_loss(close_danger)
+    far_obj = safesim_ttc_loss(far_danger)
 
     assert close_obj < far_obj
 
 
-def test_not_collision_objective_penalizes_dangerous_close_pair():
-    close_distance = torch.tensor([[0.5, 0.4]])
-    close_rel_speed = torch.tensor([[1.0, 1.2]])
-    close_closing = torch.tensor([[1.0, 1.2]])
-    close_danger = torch.tensor([[0.8, 0.9]])
+def test_causecollision_prefers_closer_ego_target_trajectories():
+    close_distance = torch.tensor([[1.0, 1.5, 1.2]])
+    far_distance = torch.tensor([[6.0, 7.0, 8.0]])
+    ego_speed = torch.zeros_like(close_distance)
+    ctrl_speed = torch.zeros_like(close_distance)
+    weights = {"distance": 1.0, "speed_penalty": 0.0, "filtered_distance": 0.1}
 
-    far_distance = torch.tensor([[5.0, 4.5]])
-    far_rel_speed = torch.tensor([[0.1, 0.1]])
-    far_closing = torch.tensor([[-0.2, -0.2]])
-    far_danger = torch.tensor([[0.0, 0.0]])
+    close_obj = causecollision_loss(close_distance, ego_speed, ctrl_speed, adv_term_weight=weights)
+    far_obj = causecollision_loss(far_distance, ego_speed, ctrl_speed, adv_term_weight=weights)
 
-    close_obj = not_collision_objective(close_distance, close_rel_speed, close_closing, close_danger)
-    far_obj = not_collision_objective(far_distance, far_rel_speed, far_closing, far_danger)
+    assert close_obj < far_obj
 
-    assert close_obj > far_obj
+
+def test_speed_penalty_targets_ego_speed_plus_speed_diff_when_close():
+    distance = torch.tensor([[2.0, 2.0, 6.0]])
+    ego_speed = torch.tensor([[10.0, 10.0, 10.0]])
+    matching_ctrl_speed = torch.tensor([[12.0, 12.0, 12.0]])
+    slow_ctrl_speed = torch.tensor([[10.0, 10.0, 10.0]])
+
+    matching = calculate_exact_speed_penalty(distance, ego_speed, matching_ctrl_speed, exact_diff=2.0)
+    slow = calculate_exact_speed_penalty(distance, ego_speed, slow_ctrl_speed, exact_diff=2.0)
+
+    assert torch.allclose(matching, torch.zeros_like(matching))
+    assert torch.allclose(slow[:, :2], torch.full((1, 2), 2.0))
+    assert torch.allclose(slow[:, 2:], torch.zeros(1, 1))
+
+
+def test_local_noncollision_penalizes_only_inside_safe_distance():
+    distance = torch.tensor([[2.0, 4.0, 5.0]])
+    loss = local_noncollision_loss(distance, safe_distance=4.0, reduction="none")
+
+    assert torch.allclose(loss, torch.tensor([[4.0, 0.0, 0.0]]))
+
+
+def test_sample_scores_order_collision_and_noncollision_oppositely():
+    danger = torch.tensor([[[0.9, 0.9]], [[0.0, 0.0]]])
+    distance = torch.tensor([[[1.0, 1.0]], [[6.0, 6.0]]])
+    ego_speed = torch.zeros_like(distance)
+    ctrl_speed = torch.zeros_like(distance)
+
+    collision_score = collision_sample_score(
+        danger,
+        distance,
+        ego_speed,
+        ctrl_speed,
+        causecollision_adv_term_weight={"distance": 1.0, "speed_penalty": 0.0, "filtered_distance": 0.1},
+    )
+    noncollision_score = local_noncollision_sample_score(distance, safe_distance=4.0)
+
+    assert torch.argsort(collision_score[:, 0]).tolist() == [0, 1]
+    assert torch.argsort(noncollision_score[:, 0]).tolist() == [1, 0]
