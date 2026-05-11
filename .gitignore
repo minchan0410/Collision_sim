@@ -31,8 +31,6 @@ mat_run/*
 MID/
 
 # SBEV catalog generated diffusion inputs/outputs
-make_new_sbev/diffusion_input_csv/
 make_new_sbev/diffusion_generation_result/
-make_new_sbev/diffusion_input_csv/
-make_new_sbev/diffusion_generation_result/
+
 

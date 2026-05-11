@@ -8,8 +8,8 @@ data_dir: mat_preprocess/processed_data
 
 # MAT/MID timebase.
 data_dt: 0.02 # sampling time
-history_sec: 0.6 # 입력
-prediction_sec: 0.9 # 출력
+history_sec: 0.2 # 입력
+prediction_sec: 1.3 # 출력
 
 # Model.
 diffnet: TransformerConcatLinear

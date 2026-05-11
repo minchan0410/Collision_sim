@@ -1,12 +1,20 @@
-catalog_dir: SBEV_Catalog_FNPrecrash
-wrong_sbev_dir: SBEV_Catalog_FNPrecrash/wrong_sbevs
+catalog_dir: make_new_sbev 
+wrong_sbev_dir: make_new_sbev/wrong_sbevs
 mat_root: mat_preprocess/mat
+carmaker_test_run_root: C:/Users/VIC_26/Desktop/Collision-prediction/CarMaker Project/Data/TestRun
+carmaker_vehicle_root: C:/Users/VIC_26/Desktop/Collision-prediction/CarMaker Project/Data/Vehicle
 
-names_csv: SBEV_Catalog_FNPrecrash/fnprecrash_image_names.csv
-trajectory_csv_dir: SBEV_Catalog_FNPrecrash/diffusion_input_csv
+names_csv: make_new_sbev/fnprecrash_image_names.csv
+trajectory_csv_dir: make_new_sbev/diffusion_input_csv
+generation_result_dir: make_new_sbev/diffusion_generation_result
 
 data_dt: 0.02
 history_sec: 0.6
 default_error_sec: 0.3
 prediction_sec: 0.9
 max_target_distance_m: 30.0
+
+ego_width: 1.607
+ego_length: 4.936
+target_width: 1.825
+target_length: 4.650

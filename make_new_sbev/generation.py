@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import logging
 import re
 import sys
@@ -22,7 +23,7 @@ REPO_ROOT = SCRIPT_DIR.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import generation_runtime as runtime  # noqa: E402
+import generation_runtime as gen_runtime  # noqa: E402
 from mat_preprocess.util.mat2txt import build_yaw_series as build_mat_yaw_series  # noqa: E402
 from mat_run import (  # noqa: E402
     COLOR_SETS,
@@ -40,8 +41,9 @@ from mat_run import (  # noqa: E402
 
 
 DEFAULT_CONFIG = "configs/run.yaml"
-DEFAULT_INPUT_DIR = "SBEV_Catalog_FNPrecrash/diffusion_input_csv"
-DEFAULT_OUTPUT_ROOT = "SBEV_Catalog_FNPrecrash/diffusion_generation_result"
+DEFAULT_CATALOG_CONFIG = SCRIPT_DIR / "sbev_catalog_config.yaml"
+DEFAULT_INPUT_DIR = "make_new_sbev/diffusion_input_csv"
+DEFAULT_OUTPUT_ROOT = "make_new_sbev/diffusion_generation_result"
 COLLISION_MODE_ORDER = (11, 12, 13, 21, 23, 31, 33, 41, 43, 51, 52, 53)
 
 
@@ -53,16 +55,22 @@ def _resolve_path(path_value: str | Path) -> Path:
 
 
 def _build_runtime(cfg: dict):
-    runtime = runtime.EasyDict()
-    runtime.ckpt_dir = str(cfg.get("viz_ckpt_dir_pkl", cfg.get("viz_ckpt_dir", ""))).strip()
-    runtime.ckpt_name = str(cfg.get("viz_ckpt_name", "")).strip()
-    runtime.seed = int(cfg.get("viz_seed", cfg.get("seed", 123)))
-    runtime.dataset = str(cfg.get("dataset", "")).strip()
-    if runtime.ckpt_dir == "":
+    viz_runtime = gen_runtime.EasyDict()
+    viz_runtime.ckpt_dir = str(cfg.get("viz_ckpt_dir_pkl", cfg.get("viz_ckpt_dir", ""))).strip()
+    viz_runtime.ckpt_name = str(cfg.get("viz_ckpt_name", "")).strip()
+    viz_runtime.seed = int(cfg.get("viz_seed", cfg.get("seed", 123)))
+    viz_runtime.dataset = str(cfg.get("dataset", "")).strip()
+    if viz_runtime.ckpt_dir == "":
         raise ValueError("Set viz_ckpt_dir_pkl or viz_ckpt_dir in run.yaml.")
-    if runtime.ckpt_name == "":
+    if viz_runtime.ckpt_name == "":
         raise ValueError("Set viz_ckpt_name in run.yaml.")
-    return runtime
+    return viz_runtime
+
+
+def _load_catalog_config() -> dict:
+    if not DEFAULT_CATALOG_CONFIG.exists():
+        return {}
+    return _load_yaml_config(DEFAULT_CATALOG_CONFIG)
 
 
 def _csv_sort_key(path: Path):
@@ -76,6 +84,36 @@ def _collect_input_csvs(input_dir: Path, input_csv: Optional[Path]) -> List[Path
             raise FileNotFoundError(f"Input CSV not found: {input_csv}")
         return [input_csv.resolve()]
     return sorted(input_dir.rglob("*_trajectory.csv"), key=_csv_sort_key)
+
+
+def _normalize_test_image_name(value: str) -> str:
+    name = Path(str(value).strip()).name
+    if name == "":
+        return ""
+    stem = Path(name).stem
+    for suffix in ("_trajectory", "_generation"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+    frame_match = re.match(r"^(?P<base>Image_\d+_.+)_frame_\d+_gen$", stem)
+    if frame_match:
+        stem = frame_match.group("base")
+    return stem
+
+
+def _filter_test_csvs(csv_paths: Sequence[Path], test_image_name: str) -> List[Path]:
+    test_stem = _normalize_test_image_name(test_image_name)
+    if test_stem == "":
+        return list(csv_paths)
+
+    matches = []
+    for csv_path in csv_paths:
+        info = _parse_input_info(csv_path)
+        csv_stem = _normalize_test_image_name(info["stem"])
+        if csv_stem == test_stem:
+            matches.append(csv_path)
+    if not matches:
+        raise FileNotFoundError(f"No input trajectory CSV matched --test {test_image_name!r}")
+    return matches
 
 
 def _parse_input_info(csv_path: Path) -> Dict[str, str]:
@@ -128,7 +166,7 @@ def _yaw_from_xy(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     for idx in range(n):
         if not np.isfinite(yaw[idx]):
             yaw[idx] = yaw[idx - 1] if idx > 0 else 0.0
-    return runtime._wrap_to_pi(yaw)
+    return gen_runtime._wrap_to_pi(yaw)
 
 
 def _read_trajectory_csv(path: Path) -> pd.DataFrame:
@@ -146,6 +184,9 @@ def _read_trajectory_csv(path: Path) -> pd.DataFrame:
     df["y"] = df["y"].astype(float)
     if "yaw" in df.columns:
         df["yaw"] = pd.to_numeric(df["yaw"], errors="coerce").astype(float)
+    for dim_col in ("width", "length"):
+        if dim_col in df.columns:
+            df[dim_col] = pd.to_numeric(df[dim_col], errors="coerce").astype(float)
     return df.sort_values(["agent", "frame"]).reset_index(drop=True)
 
 
@@ -161,6 +202,9 @@ def _read_generation_csv(path: Path) -> pd.DataFrame:
     df["frame"] = df["frame"].astype(int)
     df["x"] = df["x"].astype(float)
     df["y"] = df["y"].astype(float)
+    for dim_col in ("width", "length"):
+        if dim_col in df.columns:
+            df[dim_col] = pd.to_numeric(df[dim_col], errors="coerce").astype(float)
     return df.sort_values(["agent", "sample", "frame"]).reset_index(drop=True)
 
 
@@ -211,6 +255,24 @@ def _build_compare_axis_limits(df: pd.DataFrame) -> Tuple[float, float, float, f
     max_range = max(15.0, float(x_max - x_min), float(y_max - y_min))
     half = 0.60 * max_range
     return center_x - half, center_x + half, center_y - half, center_y + half
+
+
+def _rec_vehicle_dims(rec: dict, fallback_width: float, fallback_length: float) -> Tuple[float, float]:
+    width = rec.get("vehicle_width", fallback_width)
+    length = rec.get("vehicle_length", fallback_length)
+    try:
+        width = float(width)
+    except Exception:
+        width = float(fallback_width)
+    try:
+        length = float(length)
+    except Exception:
+        length = float(fallback_length)
+    if not np.isfinite(width) or width <= 0:
+        width = float(fallback_width)
+    if not np.isfinite(length) or length <= 0:
+        length = float(fallback_length)
+    return width, length
 
 
 def _draw_path(ax, xy: np.ndarray, *, color, linewidth: float, markersize: float, alpha: float, label: Optional[str] = None, zorder: float = 2.0) -> None:
@@ -296,6 +358,7 @@ def _sbev_anchor_vehicle_corners(
     if "ego" in role_lower:
         x0, x1 = -float(car_length), 0.0
     elif "target" in role_lower:
+        # DSM/SBEV uses the target CSV point as the rear/reference point.
         x0, x1 = 0.0, float(car_length)
     else:
         half_l = 0.5 * float(car_length)
@@ -418,20 +481,21 @@ def _append_sbev_vehicle_extents(
 def _build_sbev_video_axis_limits(
     agent_records: Sequence[dict],
     *,
-    car_length: float,
-    car_width: float,
+    fallback_car_length: float,
+    fallback_car_width: float,
     ego_cg_to_front: float,
 ) -> Tuple[float, float, float, float]:
     points: List[np.ndarray] = []
     for rec in agent_records:
         role = str(rec.get("role", ""))
+        rec_width, rec_length = _rec_vehicle_dims(rec, fallback_car_width, fallback_car_length)
         _append_sbev_vehicle_extents(
             points,
             rec.get("gt"),
             rec.get("gt_yaw"),
             role=role,
-            car_length=car_length,
-            car_width=car_width,
+            car_length=rec_length,
+            car_width=rec_width,
             ego_cg_to_front=ego_cg_to_front,
         )
         pred_yaws = rec.get("pred_yaw", {})
@@ -441,8 +505,8 @@ def _build_sbev_video_axis_limits(
                 pred_arr,
                 pred_yaws.get(sample_idx),
                 role=role,
-                car_length=car_length,
-                car_width=car_width,
+                car_length=rec_length,
+                car_width=rec_width,
                 ego_cg_to_front=ego_cg_to_front,
             )
 
@@ -454,8 +518,10 @@ def _build_sbev_video_axis_limits(
     x_max, y_max = np.max(pts, axis=0)
     x_range = max(1.0, float(x_max - x_min))
     y_range = max(1.0, float(y_max - y_min))
-    x_margin = max(2.0, 0.08 * x_range, 0.75 * float(car_width))
-    y_margin = max(3.0, 0.12 * y_range, 0.75 * float(car_length))
+    max_width = max([_rec_vehicle_dims(rec, fallback_car_width, fallback_car_length)[0] for rec in agent_records] or [fallback_car_width])
+    max_length = max([_rec_vehicle_dims(rec, fallback_car_width, fallback_car_length)[1] for rec in agent_records] or [fallback_car_length])
+    x_margin = max(2.0, 0.08 * x_range, 0.75 * float(max_width))
+    y_margin = max(3.0, 0.12 * y_range, 0.75 * float(max_length))
     x0 = float(x_min - x_margin)
     x1 = float(x_max + x_margin)
     y0 = float(y_min - y_margin)
@@ -607,8 +673,8 @@ def _first_collision_frame_for_sample(
     agent_records: Sequence[dict],
     sample_idx: int,
     *,
-    car_length: float,
-    car_width: float,
+    fallback_car_length: float,
+    fallback_car_width: float,
     ego_cg_to_front: float,
 ) -> Optional[Tuple[int, int]]:
     ego_rec = next((rec for rec in agent_records if int(rec.get("agent_index", -1)) == 0), None)
@@ -621,6 +687,7 @@ def _first_collision_frame_for_sample(
     ego_map = _path_frame_map(ego_arr, ego_yaw, ego_frame)
     if not ego_map:
         return None
+    ego_width, ego_length = _rec_vehicle_dims(ego_rec, fallback_car_width, fallback_car_length)
 
     first_collision: Optional[int] = None
     first_mode = 0
@@ -635,6 +702,7 @@ def _first_collision_frame_for_sample(
         target_map = _path_frame_map(target_arr, target_yaw, target_frame)
         if not target_map:
             continue
+        target_width, target_length = _rec_vehicle_dims(target_rec, fallback_car_width, fallback_car_length)
 
         target_frames = np.asarray(target_frame, dtype=np.int32).reshape(-1) if target_frame is not None else np.arange(len(target_arr), dtype=np.int32)
         hist_len = max(1, int(target_rec.get("history_len", 1)))
@@ -650,16 +718,16 @@ def _first_collision_frame_for_sample(
                 ego_xy,
                 yaw=ego_heading,
                 role="Ego",
-                car_length=car_length,
-                car_width=car_width,
+                car_length=ego_length,
+                car_width=ego_width,
                 ego_cg_to_front=ego_cg_to_front,
             )
             target_box = _sbev_anchor_vehicle_corners(
                 target_xy,
                 yaw=target_heading,
                 role=str(target_rec.get("role", "Target")),
-                car_length=car_length,
-                car_width=car_width,
+                car_length=target_length,
+                car_width=target_width,
                 ego_cg_to_front=ego_cg_to_front,
             )
             if _convex_polygons_overlap(ego_box, target_box):
@@ -667,8 +735,8 @@ def _first_collision_frame_for_sample(
                     ego_xy=ego_xy,
                     ego_yaw=ego_heading,
                     target_box_world=target_box,
-                    car_length=car_length,
-                    car_width=car_width,
+                    car_length=ego_length,
+                    car_width=ego_width,
                     ego_cg_to_front=ego_cg_to_front,
                 )
                 if mode == 0:
@@ -693,7 +761,9 @@ def _truncate_generated_csv_at_render_collisions(path: Path, cfg: dict) -> Dict[
     agent_records = _load_scene_csv(path)
     car_width = float(cfg.get("car_width", 1.825))
     car_length = float(cfg.get("car_length", 4.650))
-    ego_cg_to_front = float(cfg.get("ego_cg_to_front_bumper", 0.5 * car_length))
+    ego_rec = next((rec for rec in agent_records if int(rec.get("agent_index", -1)) == 0), None)
+    ego_width, ego_length = _rec_vehicle_dims(ego_rec or {}, car_width, car_length)
+    ego_cg_to_front = float(cfg.get("ego_cg_to_front_bumper", 0.5 * ego_length))
     sample_ids = sorted(int(sample_id) for sample_id in df["sample"].unique())
 
     collision_info: Dict[int, Tuple[int, int]] = {}
@@ -701,8 +771,8 @@ def _truncate_generated_csv_at_render_collisions(path: Path, cfg: dict) -> Dict[
         collision = _first_collision_frame_for_sample(
             agent_records,
             sample_idx,
-            car_length=car_length,
-            car_width=car_width,
+            fallback_car_length=car_length,
+            fallback_car_width=car_width,
             ego_cg_to_front=ego_cg_to_front,
         )
         if collision is not None:
@@ -745,7 +815,9 @@ def _render_compare_video(csv_path: Path, cfg: dict, fmt_override: str = "") -> 
     bbox_alpha = float(cfg.get("viz_video_bbox_alpha", 0.22))
     car_width = float(cfg.get("car_width", 1.825))
     car_length = float(cfg.get("car_length", 4.650))
-    ego_cg_to_front = float(cfg.get("ego_cg_to_front_bumper", 0.5 * car_length))
+    ego_rec = next((rec for rec in agent_records if int(rec.get("agent_index", -1)) == 0), None)
+    _ego_width, ego_length = _rec_vehicle_dims(ego_rec or {}, car_width, car_length)
+    ego_cg_to_front = float(cfg.get("ego_cg_to_front_bumper", 0.5 * ego_length))
 
     max_frames = 1
     for rec in agent_records:
@@ -757,8 +829,8 @@ def _render_compare_video(csv_path: Path, cfg: dict, fmt_override: str = "") -> 
     total_frames = max_frames + hold_frames
     x0, x1, y0, y1 = _build_sbev_video_axis_limits(
         agent_records,
-        car_length=car_length,
-        car_width=car_width,
+        fallback_car_length=car_length,
+        fallback_car_width=car_width,
         ego_cg_to_front=ego_cg_to_front,
     )
     pred_box_alpha = float(np.clip(max(0.45, bbox_alpha * 2.0), 0.40, 0.70))
@@ -823,7 +895,19 @@ def _render_compare_video(csv_path: Path, cfg: dict, fmt_override: str = "") -> 
             return
         ax.plot(seg[:, 0], seg[:, 1], "-o", color=color, linewidth=linewidth, markersize=markersize, alpha=alpha, zorder=zorder)
 
-    def _draw_box_at_index(ax, arr: np.ndarray, idx: int, *, role: str, color, alpha: float, zorder: float, yaw_arr=None) -> None:
+    def _draw_box_at_index(
+        ax,
+        arr: np.ndarray,
+        idx: int,
+        *,
+        role: str,
+        car_length_value: float,
+        car_width_value: float,
+        color,
+        alpha: float,
+        zorder: float,
+        yaw_arr=None,
+    ) -> None:
         if arr.shape[0] == 0:
             return
         idx = min(max(0, int(idx)), int(arr.shape[0]) - 1)
@@ -833,8 +917,8 @@ def _render_compare_video(csv_path: Path, cfg: dict, fmt_override: str = "") -> 
             anchor_xy=arr[idx],
             yaw=float(yaws[idx]) if yaws.shape[0] > idx else 0.0,
             role=role,
-            car_length=car_length,
-            car_width=car_width,
+            car_length=car_length_value,
+            car_width=car_width_value,
             ego_cg_to_front=ego_cg_to_front,
             face_color=color,
             face_alpha=alpha,
@@ -845,6 +929,7 @@ def _render_compare_video(csv_path: Path, cfg: dict, fmt_override: str = "") -> 
         agent_index = int(rec["agent_index"])
         colors = COLOR_SETS[agent_index % len(COLOR_SETS)]
         traj_z, _pred_box_z, gt_box_z = _zorders(rec)
+        rec_width, rec_length = _rec_vehicle_dims(rec, car_width, car_length)
         gt = rec["gt"]
         hist_len = int(rec["history_len"])
         hist_end = min(traj_frame_idx, max(0, hist_len - 1), int(gt.shape[0]) - 1)
@@ -873,7 +958,18 @@ def _render_compare_video(csv_path: Path, cfg: dict, fmt_override: str = "") -> 
                 zorder=traj_z + 0.05,
             )
         curr_idx = min(traj_frame_idx, int(gt.shape[0]) - 1)
-        _draw_box_at_index(ax, gt, curr_idx, role=rec.get("role", ""), yaw_arr=rec.get("gt_yaw"), color=colors["pred"], alpha=1.0, zorder=gt_box_z)
+        _draw_box_at_index(
+            ax,
+            gt,
+            curr_idx,
+            role=rec.get("role", ""),
+            yaw_arr=rec.get("gt_yaw"),
+            car_length_value=rec_length,
+            car_width_value=rec_width,
+            color=colors["pred"],
+            alpha=1.0,
+            zorder=gt_box_z,
+        )
         if show_label:
             yaws = _resolve_path_yaws(gt, rec.get("gt_yaw"))
             curr_yaw = float(yaws[curr_idx]) if yaws.shape[0] > curr_idx else 0.0
@@ -883,8 +979,8 @@ def _render_compare_video(csv_path: Path, cfg: dict, fmt_override: str = "") -> 
                     ax,
                     gt[curr_idx],
                     yaw=curr_yaw,
-                    car_length=car_length,
-                    car_width=car_width,
+                    car_length=rec_length,
+                    car_width=rec_width,
                     ego_cg_to_front=ego_cg_to_front,
                     zorder=traj_z + 12.0,
                 )
@@ -893,8 +989,8 @@ def _render_compare_video(csv_path: Path, cfg: dict, fmt_override: str = "") -> 
                 gt[curr_idx],
                 yaw=curr_yaw,
                 role=role_text,
-                car_length=car_length,
-                car_width=car_width,
+                car_length=rec_length,
+                car_width=rec_width,
                 ego_cg_to_front=ego_cg_to_front,
             )
             label_xy = np.mean(label_corners, axis=0)
@@ -914,6 +1010,7 @@ def _render_compare_video(csv_path: Path, cfg: dict, fmt_override: str = "") -> 
         agent_index = int(rec["agent_index"])
         colors = COLOR_SETS[agent_index % len(COLOR_SETS)]
         traj_z, pred_box_z, gt_box_z = _zorders(rec)
+        rec_width, rec_length = _rec_vehicle_dims(rec, car_width, car_length)
         gt = rec["gt"]
         hist_len = int(rec["history_len"])
         pred_items = sorted(rec["pred"].items(), key=lambda item: item[0])
@@ -935,7 +1032,18 @@ def _render_compare_video(csv_path: Path, cfg: dict, fmt_override: str = "") -> 
             zorder=traj_z + 0.20,
         )
         if traj_frame_idx <= max(0, hist_len - 1):
-            _draw_box_at_index(ax, gt, hist_end, role=rec.get("role", ""), yaw_arr=rec.get("gt_yaw"), color=colors["pred"], alpha=0.82, zorder=gt_box_z)
+            _draw_box_at_index(
+                ax,
+                gt,
+                hist_end,
+                role=rec.get("role", ""),
+                yaw_arr=rec.get("gt_yaw"),
+                car_length_value=rec_length,
+                car_width_value=rec_width,
+                color=colors["pred"],
+                alpha=0.82,
+                zorder=gt_box_z,
+            )
 
         pred_start = max(0, hist_len - 1)
         pred_yaw_map = rec.get("pred_yaw", {})
@@ -961,6 +1069,8 @@ def _render_compare_video(csv_path: Path, cfg: dict, fmt_override: str = "") -> 
                 pred_end,
                 role=rec.get("role", ""),
                 yaw_arr=pred_yaw_map.get(_sample_idx),
+                car_length_value=rec_length,
+                car_width_value=rec_width,
                 color=_lighten_color(colors["gt"], amount=0.35),
                 alpha=pred_box_alpha,
                 zorder=pred_box_z,
@@ -1015,7 +1125,7 @@ def _render_compare_video(csv_path: Path, cfg: dict, fmt_override: str = "") -> 
 
 
 def _build_scene_from_csv(csv_path: Path, cfg: dict, standardization: dict):
-    runtime._load_runtime_symbols()
+    gen_runtime._load_runtime_symbols()
 
     df = _read_trajectory_csv(csv_path)
     dt = float(cfg.get("data_dt", 0.02))
@@ -1023,11 +1133,11 @@ def _build_scene_from_csv(csv_path: Path, cfg: dict, standardization: dict):
         raise ValueError(f"data_dt must be positive, got {dt}")
 
     center = df[["x", "y"]].to_numpy(dtype=float).mean(axis=0)
-    env = runtime.Environment(node_type_list=["PEDESTRIAN"], standardization=standardization)
+    env = gen_runtime.Environment(node_type_list=["PEDESTRIAN"], standardization=standardization)
     env.attention_radius = {(env.NodeType.PEDESTRIAN, env.NodeType.PEDESTRIAN): 50}
 
-    data_columns = runtime._make_data_columns()
-    scene = runtime.Scene(timesteps=int(df["frame"].max()) + 1, dt=dt, name=csv_path.stem)
+    data_columns = gen_runtime._make_data_columns()
+    scene = gen_runtime.Scene(timesteps=int(df["frame"].max()) + 1, dt=dt, name=csv_path.stem)
 
     agent_ranges: Dict[int, Tuple[int, int]] = {}
     for agent_id, group in df.groupby("agent", sort=True):
@@ -1042,17 +1152,29 @@ def _build_scene_from_csv(csv_path: Path, cfg: dict, standardization: dict):
         y_world = aligned["y"].to_numpy(dtype=float)
         x_model = x_world - float(center[0])
         y_model = y_world - float(center[1])
-        vx = runtime.derivative_of(x_model, dt)
-        vy = runtime.derivative_of(y_model, dt)
-        ax = runtime.derivative_of(vx, dt)
-        ay = runtime.derivative_of(vy, dt)
+        vx = gen_runtime.derivative_of(x_model, dt)
+        vy = gen_runtime.derivative_of(y_model, dt)
+        ax = gen_runtime.derivative_of(vx, dt)
+        ay = gen_runtime.derivative_of(vy, dt)
         valid_xy = np.isfinite(x_world) & np.isfinite(y_world)
         if "yaw" in aligned.columns:
             raw_yaw = pd.to_numeric(aligned["yaw"], errors="coerce").to_numpy(dtype=float)
             yaw = build_mat_yaw_series(x_world, y_world, valid_xy, raw_yaw=raw_yaw)
         else:
             yaw = _yaw_from_xy(x_world, y_world)
-        yaw_rate = runtime.derivative_of(np.unwrap(yaw), dt)
+        yaw_rate = gen_runtime.derivative_of(np.unwrap(yaw), dt)
+        width = float(cfg.get("car_width", 1.825))
+        length = float(cfg.get("car_length", 4.650))
+        if "width" in aligned.columns:
+            width_values = pd.to_numeric(aligned["width"], errors="coerce").to_numpy(dtype=float)
+            width_values = width_values[np.isfinite(width_values) & (width_values > 0)]
+            if width_values.size > 0:
+                width = float(np.median(width_values))
+        if "length" in aligned.columns:
+            length_values = pd.to_numeric(aligned["length"], errors="coerce").to_numpy(dtype=float)
+            length_values = length_values[np.isfinite(length_values) & (length_values > 0)]
+            if length_values.size > 0:
+                length = float(np.median(length_values))
 
         node_data = pd.DataFrame(
             {
@@ -1068,13 +1190,15 @@ def _build_scene_from_csv(csv_path: Path, cfg: dict, standardization: dict):
             columns=data_columns,
         )
         description = "ego" if int(agent_id) == 0 else f"target_{int(agent_id)}"
-        node = runtime.Node(
+        node = gen_runtime.Node(
             node_type=env.NodeType.PEDESTRIAN,
             node_id=str(int(agent_id) + 1),
             data=node_data,
             first_timestep=int(full_frames[0]),
             description=description,
         )
+        node._vehicle_width = width
+        node._vehicle_length = length
         scene.nodes.append(node)
         agent_ranges[int(agent_id)] = (int(full_frames[0]), int(full_frames[-1]))
 
@@ -1089,9 +1213,9 @@ def _build_scene_from_csv(csv_path: Path, cfg: dict, standardization: dict):
 
 
 def _infer_t_and_horizon(csv_path: Path, cfg: dict, agent_ranges: Dict[int, Tuple[int, int]]) -> Tuple[int, int]:
-    runtime._load_runtime_symbols()
-    config = runtime.EasyDict(dict(cfg))
-    hyperparams = runtime._apply_run_timebase(runtime.get_traj_hypers(config), config)
+    gen_runtime._load_runtime_symbols()
+    config = gen_runtime.EasyDict(dict(cfg))
+    hyperparams = gen_runtime._apply_run_timebase(gen_runtime.get_traj_hypers(config), config)
     max_hl = int(hyperparams["maximum_history_length"])
     run_ph = int(hyperparams["prediction_horizon"])
 
@@ -1110,9 +1234,9 @@ def _infer_t_and_horizon(csv_path: Path, cfg: dict, agent_ranges: Dict[int, Tupl
 
 
 def _nodes_at_t(scene, t: int, env, min_hl: int):
-    nodes = runtime._present_nodes(scene, t, env.NodeType.PEDESTRIAN, min_hl)
-    ego_node = runtime._resolve_ego_node(scene)
-    return sorted(nodes, key=lambda n: (0 if n is ego_node else 1, *runtime._node_sort_tuple(n)))
+    nodes = gen_runtime._present_nodes(scene, t, env.NodeType.PEDESTRIAN, min_hl)
+    ego_node = gen_runtime._resolve_ego_node(scene)
+    return sorted(nodes, key=lambda n: (0 if n is ego_node else 1, *gen_runtime._node_sort_tuple(n)))
 
 
 def _process_one_csv(
@@ -1130,7 +1254,7 @@ def _process_one_csv(
     env, scene, meta = _build_scene_from_csv(input_csv, cfg, standardization)
     t, ph = _infer_t_and_horizon(input_csv, cfg, meta["agent_ranges"])
 
-    config = runtime.EasyDict(dict(cfg))
+    config = gen_runtime.EasyDict(dict(cfg))
     config.config = str(config_path)
     config.exp_name = str(output_csv.parent)
     config.dataset = str(config.get("dataset", "") or ckpt_dataset or "")
@@ -1142,14 +1266,14 @@ def _process_one_csv(
     model.encoder.set_annealing_params()
     model.config = config
 
-    hyperparams = runtime._apply_run_timebase(runtime.get_traj_hypers(config), config)
+    hyperparams = gen_runtime._apply_run_timebase(gen_runtime.get_traj_hypers(config), config)
     min_hl = int(hyperparams["minimum_history_length"])
     nodes = _nodes_at_t(scene, t, env, min_hl)
     if not nodes:
         raise RuntimeError(f"No nodes present at t={t}: {input_csv}")
 
-    labels = runtime._role_labels(scene, nodes)
-    records = runtime._generate_records(
+    labels = gen_runtime._role_labels(scene, nodes)
+    records = gen_runtime._generate_records(
         model=model,
         env=env,
         scene=scene,
@@ -1160,32 +1284,47 @@ def _process_one_csv(
         t=t,
         center=meta["center"],
     )
-    runtime._write_trajectory_csv(output_csv, records, t)
+    gen_runtime._write_trajectory_csv(output_csv, records, t)
     _truncate_generated_csv_at_render_collisions(output_csv, cfg)
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate diffusion trajectories and videos from prepared SBEV input CSVs.")
+    parser.add_argument(
+        "--test",
+        default="",
+        help="Run only one wrong SBEV image name, e.g. Image_11_LK_COR_STP_ST_216_1411.png.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     config_path = _resolve_path(DEFAULT_CONFIG)
     cfg = _load_yaml_config(config_path)
+    catalog_cfg = _load_catalog_config()
 
-    input_dir = _resolve_path(DEFAULT_INPUT_DIR)
-    output_root = _resolve_path(DEFAULT_OUTPUT_ROOT)
+    input_dir = _resolve_path(catalog_cfg.get("trajectory_csv_dir", DEFAULT_INPUT_DIR))
+    output_root = _resolve_path(
+        catalog_cfg.get("generation_result_dir", catalog_cfg.get("output_root", DEFAULT_OUTPUT_ROOT))
+    )
     output_root.mkdir(parents=True, exist_ok=True)
 
     csv_paths = _collect_input_csvs(input_dir, None)
+    csv_paths = _filter_test_csvs(csv_paths, args.test)
     if not csv_paths:
         raise FileNotFoundError(f"No input trajectory CSVs found in {input_dir}")
 
-    runtime = _build_runtime(cfg)
-    ckpt_path = _resolve_checkpoint(runtime)
+    viz_runtime = _build_runtime(cfg)
+    ckpt_path = _resolve_checkpoint(viz_runtime)
     ckpt_dataset, ckpt_epoch = _extract_dataset_epoch_from_name(ckpt_path.name)
     if ckpt_epoch is None:
         raise ValueError(f"Checkpoint filename must match '<dataset>_epoch<number>.pt': {ckpt_path.name}")
 
-    np.random.seed(runtime.seed)
-    torch.manual_seed(runtime.seed)
+    np.random.seed(viz_runtime.seed)
+    torch.manual_seed(viz_runtime.seed)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(runtime.seed)
+        torch.cuda.manual_seed_all(viz_runtime.seed)
 
     device = str(cfg.get("generation_device", "cuda")).strip().lower()
     if device == "auto":
@@ -1193,15 +1332,15 @@ def main() -> None:
     if device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available. Set generation_device: cpu in run.yaml or run in a CUDA env.")
 
-    runtime._load_runtime_symbols()
-    standardization = runtime._load_standardization(cfg)
+    gen_runtime._load_runtime_symbols()
+    standardization = gen_runtime._load_standardization(cfg)
 
     first_env, _first_scene, _first_meta = _build_scene_from_csv(csv_paths[0], cfg, standardization)
     first_t, first_ph = _infer_t_and_horizon(csv_paths[0], cfg, _first_meta["agent_ranges"])
-    model_cfg = runtime.EasyDict(dict(cfg))
+    model_cfg = gen_runtime.EasyDict(dict(cfg))
     model_cfg.config = str(config_path)
     model_cfg.exp_name = str(output_root)
-    model_cfg.dataset = str(runtime.dataset or ckpt_dataset or "")
+    model_cfg.dataset = str(viz_runtime.dataset or ckpt_dataset or "")
     model_cfg.eval_mode = True
     model_cfg.eval_at = int(ckpt_epoch)
     model_cfg.prediction_horizon = int(first_ph)
@@ -1210,7 +1349,7 @@ def main() -> None:
     original_file_handler = logging.FileHandler
     logging.FileHandler = lambda *a, **k: logging.NullHandler()
     try:
-        model, _model_hyperparams = runtime._load_model_no_pkl(
+        model, _model_hyperparams = gen_runtime._load_model_no_pkl(
             model_cfg,
             ckpt_path,
             first_env,
@@ -1238,7 +1377,7 @@ def main() -> None:
                 cfg=cfg,
                 config_path=config_path,
                 ckpt_path=ckpt_path,
-                ckpt_dataset=str(runtime.dataset or ckpt_dataset or ""),
+                ckpt_dataset=str(viz_runtime.dataset or ckpt_dataset or ""),
                 ckpt_epoch=int(ckpt_epoch),
                 standardization=standardization,
                 model=model,
@@ -1257,3 +1396,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

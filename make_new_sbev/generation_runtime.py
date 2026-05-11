@@ -252,6 +252,101 @@ def _future_xy(node: Node, t: int, ph: int, center: np.ndarray) -> np.ndarray:
     fut[:, 1] += float(center[1])
     return fut
 
+def _future_yaw(node: Node, t: int, ph: int, expected_len: int) -> np.ndarray:
+    if expected_len <= 0:
+        return np.zeros((0,), dtype=np.float32)
+    try:
+        yaw = node.get(np.array([t + 1, t + ph]), {"heading": ["yaw"]})
+    except Exception:
+        return np.full((expected_len,), np.nan, dtype=np.float32)
+    yaw = np.asarray(yaw, dtype=np.float32).reshape(-1)
+    out = np.full((expected_len,), np.nan, dtype=np.float32)
+    limit = min(expected_len, int(yaw.shape[0]))
+    if limit > 0:
+        out[:limit] = yaw[:limit]
+    return out
+
+def _track_xy_from_history_and_future(history_state: Sequence[dict], future_gt: np.ndarray) -> np.ndarray:
+    history_xy = np.asarray([[h["x"], h["y"]] for h in history_state], dtype=np.float32)
+    future_xy = np.asarray(future_gt, dtype=np.float32)
+    if future_xy.ndim != 2 or future_xy.shape[1] < 2 or future_xy.shape[0] <= 0:
+        future_xy = np.zeros((0, 2), dtype=np.float32)
+    else:
+        future_xy = future_xy[:, :2]
+    if history_xy.ndim != 2 or history_xy.shape[1] < 2 or history_xy.shape[0] <= 0:
+        return future_xy
+    return np.vstack((history_xy[:, :2], future_xy))
+
+def _is_stationary_target_track(history_state: Sequence[dict], future_gt: np.ndarray, config: EasyDict) -> bool:
+    xy = _track_xy_from_history_and_future(history_state, future_gt)
+    valid = np.isfinite(xy[:, 0]) & np.isfinite(xy[:, 1]) if xy.ndim == 2 and xy.shape[0] > 0 else np.zeros((0,), dtype=bool)
+    xy = xy[valid]
+    if xy.shape[0] <= 1:
+        return False
+
+    speed_threshold = max(
+        float(getattr(config, "stationary_target_speed", getattr(config, "heading_guidance_stationary_speed", 0.30))),
+        0.0,
+    )
+    displacement_threshold = max(
+        float(
+            getattr(
+                config,
+                "stationary_target_displacement",
+                getattr(config, "heading_guidance_stationary_displacement", 0.35),
+            )
+        ),
+        0.0,
+    )
+    dt = max(float(getattr(config, "data_dt", 0.02)), 1.0e-6)
+
+    max_displacement = float(np.nanmax(np.linalg.norm(xy - xy[0:1], axis=1)))
+    end_displacement = float(np.linalg.norm(xy[-1] - xy[0]))
+    delta = np.diff(xy, axis=0)
+    speeds = np.linalg.norm(delta, axis=1) / dt if delta.shape[0] > 0 else np.zeros((0,), dtype=np.float32)
+    median_speed = float(np.nanmedian(speeds)) if speeds.size > 0 else 0.0
+
+    return (
+        max_displacement <= displacement_threshold
+        or (median_speed <= speed_threshold and end_displacement <= displacement_threshold)
+    )
+
+def _stationary_future_dynamics(
+    rec: dict,
+    *,
+    center: np.ndarray,
+    num_samples: int,
+    ph: int,
+) -> dict:
+    history_state = rec.get("history_state", [])
+    if history_state:
+        anchor = np.asarray([history_state[-1]["x"], history_state[-1]["y"]], dtype=np.float32)
+    else:
+        future_gt = np.asarray(rec.get("future_gt", np.zeros((0, 2))), dtype=np.float32)
+        anchor = future_gt[0, :2] if future_gt.ndim == 2 and future_gt.shape[0] > 0 else np.zeros((2,), dtype=np.float32)
+
+    history_yaw = np.asarray([float(h.get("yaw", float("nan"))) for h in history_state], dtype=np.float32)
+    finite_yaw = history_yaw[np.isfinite(history_yaw)]
+    yaw_value = float(finite_yaw[-1]) if finite_yaw.size > 0 else 0.0
+
+    samples = max(int(num_samples), 1)
+    horizon = max(int(ph), 0)
+    pos_world = np.repeat(anchor.reshape(1, 1, 2), samples, axis=0)
+    pos_world = np.repeat(pos_world, horizon, axis=1).astype(np.float32)
+    pos_model = pos_world.copy()
+    pos_model[:, :, 0] -= float(center[0])
+    pos_model[:, :, 1] -= float(center[1])
+    yaw = np.full((samples, horizon), yaw_value, dtype=np.float32)
+    velocity = np.zeros_like(pos_world, dtype=np.float32)
+    speed = np.zeros((samples, horizon), dtype=np.float32)
+    return {
+        "position": pos_model,
+        "position_world": pos_world,
+        "velocity": velocity,
+        "speed": speed,
+        "yaw": yaw,
+    }
+
 def _build_collision_guidance_override(config: EasyDict, reference_future_xy_model: Optional[np.ndarray]):
     collision_enabled = bool(getattr(config, "collision_guidance_enabled", False))
     not_collision_enabled = bool(getattr(config, "not_collision_guidance_enabled", False))
@@ -467,7 +562,7 @@ def _write_diffusion_csv(path: Path, records: list, center: np.ndarray, t: int, 
         writer.writerows(rows)
 
 def _write_trajectory_csv(path: Path, records: list, t: int) -> None:
-    fieldnames = ["agent", "sample", "frame", "x", "y", "yaw"]
+    fieldnames = ["agent", "sample", "frame", "x", "y", "yaw", "width", "length"]
 
     def _path_yaw(xy: np.ndarray, raw_yaw=None, default_yaw: float = 0.0) -> np.ndarray:
         xy = np.asarray(xy, dtype=np.float32)
@@ -493,6 +588,8 @@ def _write_trajectory_csv(path: Path, records: list, t: int) -> None:
 
     rows = []
     for rec in records:
+        vehicle_width = float(rec.get("vehicle_width", float("nan")))
+        vehicle_length = float(rec.get("vehicle_length", float("nan")))
         history_xy = np.asarray([[h["x"], h["y"]] for h in rec["history_state"]], dtype=np.float32)
         history_frames = [int(h["scene_t"]) for h in rec["history_state"]]
         history_yaw_raw = np.asarray([float(h.get("yaw", float("nan"))) for h in rec["history_state"]], dtype=np.float32)
@@ -504,7 +601,17 @@ def _write_trajectory_csv(path: Path, records: list, t: int) -> None:
             continue
         if future_gt.ndim == 2 and future_gt.shape[0] > 0:
             gt = np.vstack((history_xy, future_gt[:, :2]))
-            gt_yaw_raw = np.concatenate((history_yaw, np.full((future_gt.shape[0],), np.nan, dtype=np.float32)))
+            future_gt_yaw = np.asarray(
+                rec.get("future_gt_yaw", np.full((future_gt.shape[0],), np.nan, dtype=np.float32)),
+                dtype=np.float32,
+            ).reshape(-1)
+            if future_gt_yaw.shape[0] < future_gt.shape[0]:
+                future_gt_yaw = np.pad(
+                    future_gt_yaw,
+                    (0, future_gt.shape[0] - future_gt_yaw.shape[0]),
+                    constant_values=np.nan,
+                )
+            gt_yaw_raw = np.concatenate((history_yaw, future_gt_yaw[: future_gt.shape[0]]))
             gt_yaw = _path_yaw(gt, raw_yaw=gt_yaw_raw, default_yaw=default_yaw)
             gt_frames = history_frames + [int(t + i + 1) for i in range(future_gt.shape[0])]
             for point_idx, point in enumerate(gt):
@@ -516,6 +623,8 @@ def _write_trajectory_csv(path: Path, records: list, t: int) -> None:
                         "x": float(point[0]),
                         "y": float(point[1]),
                         "yaw": float(gt_yaw[point_idx]),
+                        "width": vehicle_width,
+                        "length": vehicle_length,
                     }
                 )
 
@@ -539,6 +648,8 @@ def _write_trajectory_csv(path: Path, records: list, t: int) -> None:
                         "x": float(point[0]),
                         "y": float(point[1]),
                         "yaw": float(pred_yaw[point_idx]),
+                        "width": vehicle_width,
+                        "length": vehicle_length,
                     }
                 )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -570,6 +681,29 @@ def _generate_records(
 
     records = []
     ego_reference_future_model = None
+    stationary_target_reference_model = None
+    stationary_target_node_ids = set()
+    if predict_target_only:
+        for node in nodes_at_t:
+            if node is ego_node:
+                continue
+            target_history_state = _state_history(node, t, max_hl, hyperparams["state"][node.type], center)
+            target_future_gt = _future_xy(node, t, ph, center)
+            if _is_stationary_target_track(target_history_state, target_future_gt, config):
+                stationary_target_node_ids.add(id(node))
+                target_rec = {
+                    "history_state": target_history_state,
+                    "future_gt": target_future_gt,
+                }
+                stationary_target_reference_model = _stationary_future_dynamics(
+                    target_rec,
+                    center=center,
+                    num_samples=1,
+                    ph=ph,
+                )["position"][0]
+                break
+    stationary_target_mode = stationary_target_reference_model is not None
+
     scene_graph = scene.get_scene_graph(
         t,
         env.attention_radius,
@@ -581,24 +715,44 @@ def _generate_records(
         role = labels.get(node, f"ID {node.id}")
         history_state = _state_history(node, t, max_hl, hyperparams["state"][node.type], center)
         future_gt = _future_xy(node, t, ph, center)
+        future_gt_yaw = _future_yaw(node, t, ph, int(future_gt.shape[0]))
 
         rec = {
             "agent_index": int(agent_index),
             "agent_id": str(node.id),
             "role": role,
+            "vehicle_width": float(getattr(node, "_vehicle_width", getattr(config, "car_width", 1.825))),
+            "vehicle_length": float(getattr(node, "_vehicle_length", getattr(config, "car_length", 4.650))),
             "node": node,
             "history_state": history_state,
             "future_gt": future_gt,
+            "future_gt_yaw": future_gt_yaw,
             "dynamics": None,
             "source": "diffusion",
         }
 
         is_ego = node is ego_node
-        if predict_target_only and is_ego:
+        is_stationary_target = (not is_ego) and id(node) in stationary_target_node_ids
+
+        if stationary_target_mode and is_stationary_target:
+            rec["dynamics"] = _stationary_future_dynamics(
+                rec,
+                center=center,
+                num_samples=num_samples,
+                ph=ph,
+            )
+            records.append(rec)
+            continue
+
+        if predict_target_only and is_ego and not stationary_target_mode:
             if future_gt.shape[0] > 0:
                 ego_reference_future_model = future_gt.copy()
                 ego_reference_future_model[:, 0] -= float(center[0])
                 ego_reference_future_model[:, 1] -= float(center[1])
+            records.append(rec)
+            continue
+
+        if stationary_target_mode and (not is_ego):
             records.append(rec)
             continue
 
@@ -618,7 +772,9 @@ def _generate_records(
         )
         batch = collate([item])
         guidance_override = None
-        if not is_ego:
+        if stationary_target_mode and is_ego:
+            guidance_override = _build_collision_guidance_override(config, stationary_target_reference_model)
+        elif not is_ego:
             guidance_override = _merge_guidance_overrides(
                 _build_collision_guidance_override(config, ego_reference_future_model),
                 _build_heading_guidance_override(config, history_state),

@@ -342,6 +342,8 @@ def _load_scene_csv(csv_path):
                 traj_type = "input_plus_gt" if sample_idx == 0 else "input_plus_pred"
                 point_idx = int(row["frame"])
                 yaw = _parse_optional_float(row, "yaw")
+                width = _parse_optional_float(row, "width")
+                length = _parse_optional_float(row, "length")
             else:
                 agent_index = int(row["agent_index"])
                 agent_id = str(row["agent_id"])
@@ -350,12 +352,14 @@ def _load_scene_csv(csv_path):
                 sample_idx = int(row["sample_idx"])
                 point_idx = int(row["point_idx"])
                 yaw = _parse_optional_float(row, "yaw")
+                width = _parse_optional_float(row, "width")
+                length = _parse_optional_float(row, "length")
             x = float(row["x"])
             y = float(row["y"])
             key = (agent_index, agent_id, role, traj_type, sample_idx)
             if key not in groups:
                 groups[key] = []
-            groups[key].append((point_idx, x, y, yaw))
+            groups[key].append((point_idx, x, y, yaw, width, length))
 
     agents = {}
     for key, pts in groups.items():
@@ -364,6 +368,12 @@ def _load_scene_csv(csv_path):
         frame_arr = np.asarray([p[0] for p in pts_sorted], dtype=np.int32)
         arr = np.asarray([[p[1], p[2]] for p in pts_sorted], dtype=np.float32)
         yaw_arr = np.asarray([p[3] for p in pts_sorted], dtype=np.float32)
+        width_arr = np.asarray([p[4] for p in pts_sorted], dtype=np.float32)
+        length_arr = np.asarray([p[5] for p in pts_sorted], dtype=np.float32)
+        finite_width = width_arr[np.isfinite(width_arr) & (width_arr > 0)]
+        finite_length = length_arr[np.isfinite(length_arr) & (length_arr > 0)]
+        vehicle_width = float(np.median(finite_width)) if finite_width.size > 0 else float("nan")
+        vehicle_length = float(np.median(finite_length)) if finite_length.size > 0 else float("nan")
         if arr.ndim != 2 or arr.shape[0] == 0 or arr.shape[1] != 2:
             continue
         if agent_index not in agents:
@@ -377,7 +387,12 @@ def _load_scene_csv(csv_path):
                 "pred": {},
                 "pred_yaw": {},
                 "pred_frame": {},
+                "vehicle_width": vehicle_width,
+                "vehicle_length": vehicle_length,
             }
+        elif np.isfinite(vehicle_width) and np.isfinite(vehicle_length):
+            agents[agent_index]["vehicle_width"] = vehicle_width
+            agents[agent_index]["vehicle_length"] = vehicle_length
         if traj_type == "input_plus_gt" and sample_idx == 0:
             agents[agent_index]["gt"] = arr
             agents[agent_index]["gt_yaw"] = yaw_arr

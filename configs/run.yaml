@@ -108,7 +108,7 @@ heading_guidance_focus_ratio: 1.0
 
 ############ TTC 상호작용 가이던스 ############
 # 둘 중 하나만 켜세요. not_collision이 켜지면 collision은 내부에서 자동 비활성됩니다.
-collision_guidance_enabled: False
+collision_guidance_enabled: True
 not_collision_guidance_enabled: False
 
 # 충돌 생성: ego-reference 대비 TTC를 낮추고, 상대거리를 줄이고, closing 상대속도를 확보합니다.

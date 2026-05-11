@@ -354,19 +354,24 @@ if isempty(targetPath.frames)
     return;
 end
 
-probability = computeDiffusionCollisionProbability(data, frame, EGO_VEHICLE, opts);
-stateTrajectory = buildStateTrajectory(data, targetPath, frame, probability, TRAJ, EGO_VEHICLE, opts);
+EGO_THIS = EGO_VEHICLE;
+[egoWidth, egoLength] = vehicleSizeAtFrame(data, 0, 0, frame, opts);
+EGO_THIS.WIDTH = egoWidth;
+EGO_THIS.LENGTH = egoLength;
+
+probability = computeDiffusionCollisionProbability(data, frame, EGO_THIS, opts);
+stateTrajectory = buildStateTrajectory(data, targetPath, frame, probability, TRAJ, EGO_THIS, opts);
 
 if all(stateTrajectory(TRAJ.REL_POS_X, end) == 0) && all(stateTrajectory(TRAJ.REL_POS_Y, end) == 0)
     didDraw = false;
     return;
 end
 
-targetPred = buildTargetPrediction(data, targetPath, frame, TRACKING, EGO_VEHICLE, opts);
+targetPred = buildTargetPrediction(data, targetPath, frame, TRACKING, EGO_THIS, opts);
 
 [SBEV, ~, ~] = DSMMaxCollisionProbabilityRG3_v5( ...
     SBEV, stateTrajectory, laneInfoL, laneInfoR, targetPred, laneFlag, egoFlag, ...
-    SBEV_PARAM, TRAJ, FRONT_VISION_LANE, EGO_VEHICLE, TRACKING, opts.DataDt);
+    SBEV_PARAM, TRAJ, FRONT_VISION_LANE, EGO_THIS, TRACKING, opts.DataDt);
 
 didDraw = ~isequal(uint8(SBEV), uint8(emptySbev));
 end
@@ -393,8 +398,9 @@ for i = 1:numel(historyFrames)
     stateTrajectory(TRAJ.REL_POS_X, i) = relRear(1);
     stateTrajectory(TRAJ.REL_VEL_Y, i) = relVel(2);
     stateTrajectory(TRAJ.REL_VEL_X, i) = relVel(1);
-    stateTrajectory(TRAJ.WIDTH, i) = opts.CarWidth;
-    stateTrajectory(TRAJ.LENGTH, i) = opts.CarLength;
+    [targetWidth, targetLength] = sizeAtFramePath(targetPath, hFrame, opts);
+    stateTrajectory(TRAJ.WIDTH, i) = targetWidth;
+    stateTrajectory(TRAJ.LENGTH, i) = targetLength;
     stateTrajectory(TRAJ.HEADING_ANGLE, i) = headingLocal;
     stateTrajectory(TRAJ.I_LAT, i) = probability;
     stateTrajectory(TRAJ.COLLISION_PROBABILITY, i) = probability;
@@ -419,6 +425,7 @@ end
 relAcc = clipVector(relAcc, opts.MaxPredictionAccel);
 state = [relRear(2); relVel(2); relAcc(2); relRear(1); relVel(1); relAcc(1)];
 A = caTransition(opts.DataDt);
+[targetWidth, targetLength] = sizeAtFramePath(targetPath, frame, opts);
 
 for step = 1:predSteps
     state = A * state;
@@ -429,8 +436,8 @@ for step = 1:predSteps
     targetPred(TRACKING.REL_POS_X, 1, step) = state(4);
     targetPred(TRACKING.REL_VEL_X, 1, step) = state(5);
     targetPred(TRACKING.REL_ACC_X, 1, step) = state(6);
-    targetPred(TRACKING.WIDTH, 1, step) = opts.CarWidth;
-    targetPred(TRACKING.LENGTH, 1, step) = opts.CarLength;
+    targetPred(TRACKING.WIDTH, 1, step) = targetWidth;
+    targetPred(TRACKING.LENGTH, 1, step) = targetLength;
     targetPred(TRACKING.HEADING_ANGLE, 1, step) = headingLocal;
     targetPred(TRACKING.SHAPE, 1, step) = 4;
     targetPred(TRACKING.MOTION, 1, step) = 1;
@@ -505,7 +512,8 @@ for k = 1:predHorizonCount
     statePred = predictCaState(state0, horizonSteps, opts.DataDt);
     meanRear = [statePred(4), statePred(1)];
     heading = heading0;
-    meanCenter = meanRear + 0.5 * opts.CarLength * [cos(heading), sin(heading)];
+    [targetWidth, targetLength] = sizeAtFramePath(meanPath, frame, opts);
+    meanCenter = meanRear + 0.5 * targetLength * [cos(heading), sin(heading)];
 
     sigmaX = max(sqrt(max(c(1, 1), 0)), opts.SigmaXMin + opts.SigmaGrowthPerSec * horizonSec);
     sigmaY = max(sqrt(max(c(2, 2), 0)), opts.SigmaYMin + opts.SigmaGrowthPerSec * horizonSec);
@@ -513,25 +521,25 @@ for k = 1:predHorizonCount
         heading = circularMean(headings);
     end
 
-    p = collisionProbabilityFromNormal(meanCenter, heading, sigmaX, sigmaY, EGO_VEHICLE, opts);
+    p = collisionProbabilityFromNormal(meanCenter, heading, sigmaX, sigmaY, EGO_VEHICLE, opts, targetWidth, targetLength);
     probability = max(probability, p);
 end
 
 probability = min(max(probability, 0), 1);
 end
 
-function p = collisionProbabilityFromNormal(meanCenter, heading, sigmaX, sigmaY, EGO_VEHICLE, opts)
+function p = collisionProbabilityFromNormal(meanCenter, heading, sigmaX, sigmaY, EGO_VEHICLE, opts, targetWidth, targetLength)
 tmpYf = EGO_VEHICLE.WIDTH / 2 + ...
-    opts.CarLength / 2 * sin(heading) * signOrOne(heading) + ...
-    opts.CarWidth / 2 * cos(heading);
+    targetLength / 2 * sin(heading) * signOrOne(heading) + ...
+    targetWidth / 2 * cos(heading);
 tmpYi = -EGO_VEHICLE.WIDTH / 2 - ...
-    opts.CarLength / 2 * sin(heading) * signOrOne(heading) - ...
-    opts.CarWidth / 2 * cos(heading);
+    targetLength / 2 * sin(heading) * signOrOne(heading) - ...
+    targetWidth / 2 * cos(heading);
 
-tmpXf = opts.CarLength / 2 * cos(heading) - opts.CarWidth / 2 * sin(heading);
+tmpXf = targetLength / 2 * cos(heading) - targetWidth / 2 * sin(heading);
 tmpXi = -EGO_VEHICLE.LENGTH - ...
-    opts.CarLength / 2 * cos(heading) - ...
-    opts.CarWidth / 2 * sin(heading) * signOrOne(heading);
+    targetLength / 2 * cos(heading) - ...
+    targetWidth / 2 * sin(heading) * signOrOne(heading);
 
 py = normalCdf(tmpYf, meanCenter(2), sigmaY) - normalCdf(tmpYi, meanCenter(2), sigmaY);
 px = normalCdf(tmpXf, meanCenter(1), sigmaX) - normalCdf(tmpXi, meanCenter(1), sigmaX);
@@ -703,7 +711,7 @@ end
 end
 
 function [targetRear, headingLocal, ok] = targetRearWorldAtFrame(targetPath, frame, egoBasis, opts)
-[targetCenter, ok] = pointAtFrame(targetPath, frame, true);
+[targetRear, ok] = pointAtFrame(targetPath, frame, true);
 if ~ok
     targetRear = [0, 0];
     headingLocal = 0;
@@ -711,7 +719,6 @@ if ~ok
 end
 
 targetDir = directionAtFrame(targetPath, frame, opts);
-targetRear = targetCenter - 0.5 * opts.CarLength * targetDir;
 targetDirLocal = projectToEgoBasis(targetDir, egoBasis);
 headingLocal = atan2(targetDirLocal(2), targetDirLocal(1));
 end
@@ -739,7 +746,8 @@ end
 function [relRear, headingLocal, relVel] = targetStateInEgoFrame(targetPath, frame, egoState, EGO_VEHICLE, opts)
 [centerLocal, headingLocal] = targetCenterInEgoFrame(targetPath, frame, egoState, opts);
 forwardLocal = [cos(headingLocal), sin(headingLocal)];
-relRear = centerLocal - 0.5 * opts.CarLength * forwardLocal;
+[~, targetLength] = sizeAtFramePath(targetPath, frame, opts);
+relRear = centerLocal - 0.5 * targetLength * forwardLocal;
 
 prevFrame = frame - 1;
 nextFrame = frame + 1;
@@ -786,7 +794,8 @@ if norm(relVel) > 1.0e-6
 end
 
 forwardLocal = [cos(headingLocal), sin(headingLocal)];
-relRear = centerLocal - 0.5 * opts.CarLength * forwardLocal;
+[~, targetLength] = sizeAtFramePath(targetPath, frame, opts);
+relRear = centerLocal - 0.5 * targetLength * forwardLocal;
 end
 
 function [relRear, headingLocal, relVel, relAcc] = estimateTargetCaStateInEgoFrame(targetPath, frame, egoState, opts)
@@ -801,7 +810,8 @@ for hFrame = historyFrames
         continue;
     end
     forwardLocal = [cos(headingLocal), sin(headingLocal)];
-    relRear = centerLocal - 0.5 * opts.CarLength * forwardLocal;
+    [~, targetLength] = sizeAtFramePath(targetPath, hFrame, opts);
+    relRear = centerLocal - 0.5 * targetLength * forwardLocal;
     measurements(end + 1, :) = relRear; %#ok<AGROW>
     headings(end + 1, 1) = headingLocal; %#ok<AGROW>
 end
@@ -862,13 +872,15 @@ end
 end
 
 function [centerLocal, headingLocal, ok] = targetCenterInEgoFrame(targetPath, frame, egoState, opts)
-[targetCenter, ok] = pointAtFrame(targetPath, frame, true);
+[targetRear, ok] = pointAtFrame(targetPath, frame, true);
 if ~ok
     centerLocal = [0, 0];
     headingLocal = 0;
     return;
 end
 targetDir = directionAtFrame(targetPath, frame, opts);
+[~, targetLength] = sizeAtFramePath(targetPath, frame, opts);
+targetCenter = targetRear + 0.5 * targetLength * targetDir;
 rel = targetCenter - egoState.front;
 centerLocal = [dot(rel, egoState.forward), dot(rel, egoState.left)];
 targetDirLocal = [dot(targetDir, egoState.forward), dot(targetDir, egoState.left)];
@@ -897,6 +909,8 @@ if isempty(rows)
     path.frames = [];
     path.xy = [];
     path.yaw = [];
+    path.width = [];
+    path.length = [];
     return;
 end
 [frames, order] = sort(double(rows.frame));
@@ -905,6 +919,14 @@ yaw = [];
 if any(strcmp('yaw', data.Properties.VariableNames))
     yaw = double(rows.yaw(order));
 end
+width = [];
+if any(strcmp('width', data.Properties.VariableNames))
+    width = double(rows.width(order));
+end
+length = [];
+if any(strcmp('length', data.Properties.VariableNames))
+    length = double(rows.length(order));
+end
 [frames, uniqueIdx] = unique(frames, 'stable');
 path.frames = frames(:);
 path.xy = xy(uniqueIdx, :);
@@ -912,6 +934,58 @@ if ~isempty(yaw)
     path.yaw = yaw(uniqueIdx);
 else
     path.yaw = [];
+end
+if ~isempty(width)
+    path.width = width(uniqueIdx);
+else
+    path.width = [];
+end
+if ~isempty(length)
+    path.length = length(uniqueIdx);
+else
+    path.length = [];
+end
+end
+
+function [width, length] = vehicleSizeAtFrame(data, agentId, sampleId, frame, opts)
+path = getPath(data, agentId, sampleId);
+[width, length] = sizeAtFramePath(path, frame, opts);
+end
+
+function [width, length] = sizeAtFramePath(path, frame, opts)
+width = opts.CarWidth;
+length = opts.CarLength;
+if isempty(path.frames)
+    return;
+end
+if isfield(path, 'width') && ~isempty(path.width)
+    value = interpFinite(path.frames, path.width, frame);
+    if isfinite(value) && value > 0
+        width = value;
+    end
+end
+if isfield(path, 'length') && ~isempty(path.length)
+    value = interpFinite(path.frames, path.length, frame);
+    if isfinite(value) && value > 0
+        length = value;
+    end
+end
+end
+
+function value = interpFinite(frames, values, frame)
+value = NaN;
+frames = double(frames(:));
+values = double(values(:));
+mask = isfinite(frames) & isfinite(values);
+frames = frames(mask);
+values = values(mask);
+if isempty(frames)
+    return;
+end
+if numel(frames) == 1
+    value = values(1);
+else
+    value = interp1(frames, values, double(frame), 'nearest', 'extrap');
 end
 end
 

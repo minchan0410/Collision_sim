@@ -48,7 +48,7 @@ class MatSeries:
     ego_x: np.ndarray
     ego_y: np.ndarray
     ego_yaw: np.ndarray
-    traffic: List[Tuple[int, np.ndarray, np.ndarray, np.ndarray]]
+    traffic: List[Tuple[int, np.ndarray, np.ndarray, np.ndarray, float, float]]
 
 
 def _load_config(path: Path) -> dict:
@@ -78,6 +78,105 @@ def _load_mat_timing(catalog_cfg: dict) -> Tuple[float, float, float]:
     history_sec = _positive_float(catalog_cfg.get("history_sec", 0.6), "history_sec")
     prediction_sec = _positive_float(catalog_cfg.get("prediction_sec", 0.9), "prediction_sec")
     return data_dt, history_sec, prediction_sec
+
+
+def _find_carmaker_test_run_file(root: Optional[Path], scenario: str) -> Optional[Path]:
+    if root is None:
+        return None
+    candidates = [
+        root / scenario,
+        root / "TestRun" / scenario,
+        root / f"{scenario}.trf",
+        root / "TestRun" / f"{scenario}.trf",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path.resolve()
+    try:
+        matches = sorted(path for path in root.rglob(scenario) if path.is_file())
+    except Exception:
+        matches = []
+    return matches[0].resolve() if matches else None
+
+
+def _parse_carmaker_traffic_dimensions(path: Optional[Path]) -> Dict[int, Tuple[float, float]]:
+    dims: Dict[int, Tuple[float, float]] = {}
+    if path is None or not path.exists():
+        return dims
+    pattern = re.compile(
+        r"^Traffic\.(?P<idx>\d+)\.Basics\.Dimension\s*=\s*"
+        r"(?P<length>[-+0-9.eE]+)\s+(?P<width>[-+0-9.eE]+)"
+    )
+    with path.open("r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            match = pattern.match(line.strip())
+            if not match:
+                continue
+            length = float(match.group("length"))
+            width = float(match.group("width"))
+            if math.isfinite(width) and math.isfinite(length) and width > 0 and length > 0:
+                dims[int(match.group("idx"))] = (width, length)
+    return dims
+
+
+def _find_carmaker_vehicle_file(test_run_file: Optional[Path], vehicle_root: Optional[Path]) -> Optional[Path]:
+    if test_run_file is None or not test_run_file.exists():
+        return None
+    vehicle_name = ""
+    with test_run_file.open("r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            match = re.match(r"^Vehicle\s*=\s*(?P<name>\S+)", line.strip())
+            if match:
+                vehicle_name = match.group("name").strip()
+                break
+    if not vehicle_name:
+        return None
+    roots: List[Path] = []
+    if vehicle_root is not None:
+        roots.append(vehicle_root)
+    data_root = None
+    for parent in test_run_file.parents:
+        if parent.name.lower() == "data":
+            data_root = parent
+            break
+    if data_root is not None:
+        roots.append(data_root / "Vehicle")
+    for root in roots:
+        for candidate in (root / vehicle_name, root / f"{vehicle_name}.veh"):
+            if candidate.is_file():
+                return candidate.resolve()
+        try:
+            matches = sorted(path for path in root.rglob(vehicle_name) if path.is_file())
+        except Exception:
+            matches = []
+        if matches:
+            return matches[0].resolve()
+    return None
+
+
+def _parse_carmaker_ego_dimensions(path: Optional[Path], default_width: float, default_length: float) -> Tuple[float, float]:
+    if path is None or not path.exists():
+        return float(default_width), float(default_length)
+    text = path.read_text(encoding="utf-8", errors="ignore")
+
+    outer_match = re.search(r"^Vehicle\.OuterSkin\s*=\s*(.+)$", text, flags=re.MULTILINE)
+    if outer_match:
+        values = [float(v) for v in re.findall(r"[-+0-9.eE]+", outer_match.group(1))]
+        if len(values) >= 5:
+            length = abs(values[3] - values[0])
+            width = abs(values[4] - values[1])
+            if math.isfinite(width) and math.isfinite(length) and width > 0 and length > 0:
+                return width, length
+
+    width_match = re.search(r"^CarGen\.Vehicle\.Width\s*=\s*([-+0-9.eE]+)", text, flags=re.MULTILINE)
+    length_match = re.search(r"^CarGen\.Vehicle\.Length\s*=\s*([-+0-9.eE]+)", text, flags=re.MULTILINE)
+    if width_match and length_match:
+        width = float(width_match.group(1)) / 1000.0
+        length = float(length_match.group(1)) / 1000.0
+        if math.isfinite(width) and math.isfinite(length) and width > 0 and length > 0:
+            return width, length
+
+    return float(default_width), float(default_length)
 
 
 def _parse_catalog_image(path: Path) -> Optional[CatalogImage]:
@@ -133,7 +232,14 @@ def _get_optional_numeric(accessor, keys: Iterable[str], sample_idx: np.ndarray)
     return None
 
 
-def _load_mat_series(mat_path: Path, data_dt: float) -> MatSeries:
+def _load_mat_series(
+    mat_path: Path,
+    data_dt: float,
+    *,
+    traffic_dimensions: Optional[Dict[int, Tuple[float, float]]] = None,
+    default_target_width: float = 1.825,
+    default_target_length: float = 4.650,
+) -> MatSeries:
     accessor = load_mat_accessor(mat_path)
     try:
         time = as_numeric_1d(accessor.get("Time"), name="Time")
@@ -166,7 +272,8 @@ def _load_mat_series(mat_path: Path, data_dt: float) -> MatSeries:
                 traffic_slots.append((slot_idx, slot_token, key, ty_key))
         traffic_slots.sort(key=lambda item: item[0])
 
-        traffic: List[Tuple[int, np.ndarray, np.ndarray, np.ndarray]] = []
+        traffic: List[Tuple[int, np.ndarray, np.ndarray, np.ndarray, float, float]] = []
+        traffic_dimensions = traffic_dimensions or {}
         for slot_idx, slot_token, tx_key, ty_key in traffic_slots:
             tx = as_numeric_1d(accessor.get(tx_key), name=tx_key)[sample_idx]
             ty = as_numeric_1d(accessor.get(ty_key), name=ty_key)[sample_idx]
@@ -199,7 +306,11 @@ def _load_mat_series(mat_path: Path, data_dt: float) -> MatSeries:
             tx[~valid] = np.nan
             ty[~valid] = np.nan
             yaw[~valid] = np.nan
-            traffic.append((slot_idx, tx, ty, yaw))
+            width, length = traffic_dimensions.get(
+                slot_idx,
+                (float(default_target_width), float(default_target_length)),
+            )
+            traffic.append((slot_idx, tx, ty, yaw, float(width), float(length)))
 
         return MatSeries(
             time=time,
@@ -222,21 +333,21 @@ def _select_target_slots(
     scene_frame: int,
     max_target_distance_m: float,
     all_targets: bool,
-) -> List[Tuple[int, np.ndarray, np.ndarray, np.ndarray]]:
+) -> List[Tuple[int, np.ndarray, np.ndarray, np.ndarray, float, float]]:
     candidates = []
     ego_xy = np.array([series.ego_x[scene_frame], series.ego_y[scene_frame]], dtype=float)
-    for slot_idx, tx, ty, yaw in series.traffic:
+    for slot_idx, tx, ty, yaw, width, length in series.traffic:
         target_xy = np.array([tx[scene_frame], ty[scene_frame]], dtype=float)
         if not np.isfinite(target_xy).all() or not np.isfinite(ego_xy).all():
             continue
         distance = float(np.linalg.norm(target_xy - ego_xy))
         if distance <= max_target_distance_m:
-            candidates.append((distance, slot_idx, tx, ty, yaw))
+            candidates.append((distance, slot_idx, tx, ty, yaw, width, length))
 
     candidates.sort(key=lambda item: (item[0], item[1]))
     if all_targets:
-        return [(slot_idx, tx, ty, yaw) for _distance, slot_idx, tx, ty, yaw in candidates]
-    return [(candidates[0][1], candidates[0][2], candidates[0][3], candidates[0][4])] if candidates else []
+        return [(slot_idx, tx, ty, yaw, width, length) for _distance, slot_idx, tx, ty, yaw, width, length in candidates]
+    return [(candidates[0][1], candidates[0][2], candidates[0][3], candidates[0][4], candidates[0][5], candidates[0][6])] if candidates else []
 
 
 def _window_for_error(
@@ -290,7 +401,9 @@ def _write_trajectory_csv(
     *,
     series: MatSeries,
     window: Dict[str, int | float],
-    targets: List[Tuple[int, np.ndarray, np.ndarray, np.ndarray]],
+    targets: List[Tuple[int, np.ndarray, np.ndarray, np.ndarray, float, float]],
+    ego_width: float,
+    ego_length: float,
 ) -> int:
     rows = []
     start = int(window["input_start"])
@@ -306,10 +419,12 @@ def _write_trajectory_csv(
                 "x": float(series.ego_x[frame]),
                 "y": float(series.ego_y[frame]),
                 "yaw": float(series.ego_yaw[frame]),
+                "width": float(ego_width),
+                "length": float(ego_length),
             }
         )
 
-    for agent_idx, (_slot_idx, tx, ty, yaw) in enumerate(targets, start=1):
+    for agent_idx, (_slot_idx, tx, ty, yaw, width, length) in enumerate(targets, start=1):
         for frame in frames:
             if not (np.isfinite(tx[frame]) and np.isfinite(ty[frame]) and np.isfinite(yaw[frame])):
                 continue
@@ -321,12 +436,14 @@ def _write_trajectory_csv(
                     "x": float(tx[frame]),
                     "y": float(ty[frame]),
                     "yaw": float(yaw[frame]),
+                    "width": float(width),
+                    "length": float(length),
                 }
             )
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["agent", "sample", "frame", "x", "y", "yaw"])
+        writer = csv.DictWriter(f, fieldnames=["agent", "sample", "frame", "x", "y", "yaw", "width", "length"])
         writer.writeheader()
         writer.writerows(rows)
     return len(rows)
@@ -340,6 +457,8 @@ def _process_one(
     image: CatalogImage,
     *,
     mat_root: Path,
+    carmaker_test_run_root: Optional[Path],
+    carmaker_vehicle_root: Optional[Path],
     out_dir: Path,
     data_dt: float,
     history_sec: float,
@@ -347,6 +466,10 @@ def _process_one(
     error_sec: float,
     max_target_distance_m: float,
     all_targets: bool,
+    ego_width: float,
+    ego_length: float,
+    default_target_width: float,
+    default_target_length: float,
 ) -> Dict[str, object]:
     mat_path = _find_mat_file(mat_root, image)
     base = {
@@ -365,7 +488,21 @@ def _process_one(
         return base
 
     try:
-        series = _load_mat_series(mat_path, data_dt=data_dt)
+        test_run_file = _find_carmaker_test_run_file(carmaker_test_run_root, image.scenario)
+        traffic_dimensions = _parse_carmaker_traffic_dimensions(test_run_file)
+        vehicle_file = _find_carmaker_vehicle_file(test_run_file, carmaker_vehicle_root)
+        actual_ego_width, actual_ego_length = _parse_carmaker_ego_dimensions(
+            vehicle_file,
+            default_width=ego_width,
+            default_length=ego_length,
+        )
+        series = _load_mat_series(
+            mat_path,
+            data_dt=data_dt,
+            traffic_dimensions=traffic_dimensions,
+            default_target_width=default_target_width,
+            default_target_length=default_target_length,
+        )
         window = _window_for_error(
             series,
             image_frame_1based=image.image_frame_1based,
@@ -384,11 +521,22 @@ def _process_one(
             raise ValueError("no target in distance gate")
 
         out_csv = out_dir / image.scenario / f"{_safe_stem(image)}_trajectory.csv"
-        row_count = _write_trajectory_csv(out_csv, series=series, window=window, targets=targets)
+        row_count = _write_trajectory_csv(
+            out_csv,
+            series=series,
+            window=window,
+            targets=targets,
+            ego_width=actual_ego_width,
+            ego_length=actual_ego_length,
+        )
         base.update(
             {
                 **window,
-                "target_slots": ";".join(str(slot_idx) for slot_idx, _tx, _ty, _yaw in targets),
+                "target_slots": ";".join(str(slot_idx) for slot_idx, _tx, _ty, _yaw, _width, _length in targets),
+                "target_sizes": ";".join(f"{width:.3f}x{length:.3f}" for _slot_idx, _tx, _ty, _yaw, width, length in targets),
+                "carmaker_test_run": str(test_run_file) if test_run_file else "",
+                "carmaker_vehicle": str(vehicle_file) if vehicle_file else "",
+                "ego_size": f"{actual_ego_width:.3f}x{actual_ego_length:.3f}",
                 "num_targets": len(targets),
                 "num_rows": row_count,
                 "trajectory_csv": str(out_csv),
@@ -421,10 +569,24 @@ def main() -> None:
     )
     mat_root = _resolve_repo_path(cfg.get("mat_root", "mat_preprocess/mat"))
     out_dir = _resolve_repo_path(cfg.get("trajectory_csv_dir", "SBEV_Catalog_FNPrecrash/diffusion_input_csv"))
+    carmaker_root_value = cfg.get(
+        "carmaker_test_run_root",
+        r"C:\Users\VIC_26\Desktop\Collision-prediction\CarMaker Project\Data\TestRun",
+    )
+    carmaker_test_run_root = _resolve_repo_path(carmaker_root_value) if str(carmaker_root_value).strip() else None
+    vehicle_root_value = cfg.get(
+        "carmaker_vehicle_root",
+        r"C:\Users\VIC_26\Desktop\Collision-prediction\CarMaker Project\Data\Vehicle",
+    )
+    carmaker_vehicle_root = _resolve_repo_path(vehicle_root_value) if str(vehicle_root_value).strip() else None
 
     data_dt, history_sec, prediction_sec = _load_mat_timing(cfg)
     error_sec = float(args.error if args.error is not None else cfg.get("default_error_sec", 0.3))
     max_target_distance_m = float(cfg.get("max_target_distance_m", 60.0))
+    ego_width = float(cfg.get("ego_width", cfg.get("car_width", 1.825)))
+    ego_length = float(cfg.get("ego_length", cfg.get("car_length", 4.650)))
+    default_target_width = float(cfg.get("target_width", cfg.get("car_width", ego_width)))
+    default_target_length = float(cfg.get("target_length", cfg.get("car_length", ego_length)))
 
     images = _iter_catalog_images(catalog_dir)
     if args.image_name:
@@ -442,6 +604,8 @@ def main() -> None:
         _process_one(
             image,
             mat_root=mat_root,
+            carmaker_test_run_root=carmaker_test_run_root,
+            carmaker_vehicle_root=carmaker_vehicle_root,
             out_dir=out_dir,
             data_dt=data_dt,
             history_sec=history_sec,
@@ -449,6 +613,10 @@ def main() -> None:
             error_sec=error_sec,
             max_target_distance_m=max_target_distance_m,
             all_targets=bool(args.all_targets),
+            ego_width=ego_width,
+            ego_length=ego_length,
+            default_target_width=default_target_width,
+            default_target_length=default_target_length,
         )
         for image in images
     ]
