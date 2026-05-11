@@ -110,6 +110,8 @@ heading_guidance_focus_ratio: 1.0
 # 둘 중 하나만 켜세요. not_collision이 켜지면 collision은 내부에서 자동 비활성됩니다.
 collision_guidance_enabled: True
 not_collision_guidance_enabled: False
+# 충돌/비충돌 공통 힘 배율. 1.0이면 기존 세기, 값을 키우면 interaction guidance가 강해집니다.
+interaction_guidance_scale: 7.0
 
 # collision=True일 때만 사용: SafeSim 공식 guidance_config.py의 params/ttc/causecollision 이름을 유지합니다.
 safesim_guidance:

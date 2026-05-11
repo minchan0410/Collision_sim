@@ -200,6 +200,10 @@ class DiffusionTraj(Module):
         if (not collision_enabled) and (not not_collision_enabled):
             return vel_phys.new_tensor(0.0)
 
+        interaction_guidance_scale = max(float(guidance.get("interaction_guidance_scale", 1.0)), 0.0)
+        if interaction_guidance_scale <= 0.0:
+            return vel_phys.new_tensor(0.0)
+
         ref_pos = guidance.get("collision_reference_positions", None)
         if ref_pos is None:
             return vel_phys.new_tensor(0.0)
@@ -291,7 +295,7 @@ class DiffusionTraj(Module):
                 reduction="mean",
             )
 
-        return objective
+        return objective * interaction_guidance_scale
 
     def _compute_dynamics_objective(self, vel_phys, guidance):
         eps = float(guidance.get("eps", 1e-6))

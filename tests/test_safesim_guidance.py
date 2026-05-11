@@ -1,5 +1,6 @@
 import torch
 
+from models.diffusion import DiffusionTraj
 from models.safesim_guidance import (
     calculate_exact_speed_penalty,
     causecollision_loss,
@@ -141,3 +142,31 @@ def test_sample_scores_order_collision_and_noncollision_oppositely():
 
     assert torch.argsort(collision_score[:, 0]).tolist() == [0, 1]
     assert torch.argsort(noncollision_score[:, 0]).tolist() == [1, 0]
+
+
+def test_interaction_guidance_scale_multiplies_collision_and_noncollision_objectives():
+    diffusion = DiffusionTraj(net=None, var_sched=None)
+    vel_phys = torch.zeros(1, 2, 2)
+    ref_pos = torch.tensor([[[1.0, 0.0], [1.0, 0.0]]])
+
+    base_guidance = {
+        "collision_reference_positions": ref_pos,
+        "dt": 1.0,
+        "eps": 1.0e-6,
+        "causecollision_adv_term_weight": {"distance": 1.0, "speed_penalty": 0.0, "filtered_distance": 0.1},
+        "local_noncollision_safe_distance": 4.0,
+    }
+
+    for collision_enabled, not_collision_enabled in ((True, False), (False, True)):
+        guidance = dict(
+            base_guidance,
+            collision_enabled=collision_enabled,
+            not_collision_enabled=not_collision_enabled,
+            interaction_guidance_scale=1.0,
+        )
+        base = diffusion._compute_collision_objective(vel_phys, guidance)
+
+        guidance["interaction_guidance_scale"] = 4.0
+        scaled = diffusion._compute_collision_objective(vel_phys, guidance)
+
+        assert torch.allclose(scaled, base * 4.0)

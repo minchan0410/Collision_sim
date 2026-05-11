@@ -94,6 +94,9 @@ class AutoEncoder(Module):
             ["safesim_guidance", "causecollision", "adv_term_weight"],
             {"distance": 1.0, "speed_penalty": 0.0, "filtered_distance": 0.1},
         )
+        interaction_guidance_scale = getattr(self.config, "interaction_guidance_scale", None)
+        if interaction_guidance_scale is None:
+            interaction_guidance_scale = 1.0
 
         return {
             "enabled": True,
@@ -127,6 +130,7 @@ class AutoEncoder(Module):
             "collision_enabled": bool(getattr(self.config, "collision_guidance_enabled", False))
                                 and not bool(getattr(self.config, "not_collision_guidance_enabled", False)),
             "not_collision_enabled": bool(getattr(self.config, "not_collision_guidance_enabled", False)),
+            "interaction_guidance_scale": float(interaction_guidance_scale),
             "sample_filter_enabled": bool(self._cfg_get(self.config, ["safesim_guidance", "params", "sample_filter_enabled"], True)),
             "ttc_time_bandwidth": float(ttc_time_bandwidth),
             "ttc_distance_bandwidth": float(ttc_distance_bandwidth),
