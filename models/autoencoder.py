@@ -119,6 +119,11 @@ class AutoEncoder(Module):
             "ttc_near_distance_temp": float(getattr(self.config, "ttc_near_distance_temp", 0.5)),
             "ttc_closing_gate_temp": float(getattr(self.config, "ttc_closing_gate_temp", 0.25)),
             "ttc_closing_softplus_beta": float(getattr(self.config, "ttc_closing_softplus_beta", 5.0)),
+            "safesim_ttc_time_bandwidth": float(getattr(self.config, "safesim_ttc_time_bandwidth", 1.0)),
+            "safesim_ttc_distance_bandwidth": float(getattr(self.config, "safesim_ttc_distance_bandwidth", 1.0)),
+            "safesim_ttc_min_velocity_diff": float(getattr(self.config, "safesim_ttc_min_velocity_diff", 0.1)),
+            "safesim_collision_rel_speed_target": float(getattr(self.config, "safesim_collision_rel_speed_target", 0.0)),
+            "safesim_not_collision_danger_margin": float(getattr(self.config, "safesim_not_collision_danger_margin", 0.15)),
             "xT_temperature": float(getattr(self.config, "sampling_xt_temperature", 1.0)),
         }
 
