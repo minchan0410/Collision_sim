@@ -106,7 +106,7 @@ heading_guidance_weight: 3.0
 heading_guidance_min_speed: 0.03
 heading_guidance_focus_ratio: 1.0
 
-############ SafeSim collision + local non-collision 가이던스 ############
+############ SafeSim collision + Diffusion Planner non-collision 가이던스 ############
 # 둘 중 하나만 켜세요. not_collision이 켜지면 collision은 내부에서 자동 비활성됩니다.
 collision_guidance_enabled: True
 not_collision_guidance_enabled: False
@@ -144,12 +144,15 @@ safesim_guidance:
     speed_diff: 2.0
     interact_dist_thresh: 100.0
 
-# non-collision=True일 때만 사용: SafeSim 공식 항이 아닌 로컬 확장 repel objective입니다.
-local_noncollision:
-  safe_distance: 12.0
-  loss_timesteps: null
-  filter_timesteps: null
-  loss_scale: 10.0
+# non-collision=True일 때만 사용: Diffusion Planner Appendix C.3 Eq. (9) collision-avoidance energy.
+# bbox size는 기본적으로 car_length/car_width를 사용합니다. 실험별 override가 필요할 때만 gen_size/neighbor_size를 켜세요.
+dp_noncol:
+  r: 1.0
+  omega_c: 1.0
+  loss_scale: 1.0
+  bbox_inflation: 0.0
+  gen_size: null
+  neighbor_size: null
 
 # 초기 x_T 노이즈 온도(샘플 다양성에 영향).
 sampling_xt_temperature: 1.0

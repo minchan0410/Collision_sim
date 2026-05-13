@@ -1,14 +1,17 @@
 import torch
 
 from models.diffusion import DiffusionTraj
+from models.diffusion_planner_collision_avoidance import (
+    batch_signed_distance_rect,
+    center_rect_to_points,
+    diffusion_planner_collision_energy,
+)
 from models.safesim_guidance import (
     calculate_exact_speed_penalty,
     causecollision_loss,
     collision_sample_score,
     compute_pair_kinematics,
     compute_safesim_ttc_score,
-    local_noncollision_loss,
-    local_noncollision_sample_score,
     safesim_ttc_loss,
 )
 
@@ -118,11 +121,59 @@ def test_speed_penalty_targets_ego_speed_plus_speed_diff_when_close():
     assert torch.allclose(slow[:, 2:], torch.zeros(1, 1))
 
 
-def test_local_noncollision_penalizes_only_inside_safe_distance():
-    distance = torch.tensor([[2.0, 4.0, 5.0]])
-    loss = local_noncollision_loss(distance, safe_distance=4.0, reduction="none")
+def _rect(x, y, length=4.0, width=2.0):
+    return torch.tensor([[x, y, 1.0, 0.0, length, width]], dtype=torch.float32)
 
-    assert torch.allclose(loss, torch.tensor([[4.0, 0.0, 0.0]]))
+
+def test_dp_signed_distance_rect_signs():
+    ego = center_rect_to_points(_rect(0.0, 0.0))
+    far = center_rect_to_points(_rect(10.0, 0.0))
+    overlap = center_rect_to_points(_rect(1.0, 0.0))
+
+    far_distance = batch_signed_distance_rect(ego, far)
+    overlap_distance = batch_signed_distance_rect(ego, overlap)
+
+    assert far_distance.item() > 0.0
+    assert overlap_distance.item() < 0.0
+
+
+def test_dp_noncollision_far_has_small_gradient():
+    gen = torch.zeros(1, 5, 2, requires_grad=True)
+    neighbor = torch.zeros(1, 5, 2)
+    neighbor[..., 0] = 20.0
+
+    loss = diffusion_planner_collision_energy(
+        gen,
+        neighbor,
+        gen_size=(4.0, 2.0),
+        neighbor_size=(4.0, 2.0),
+        r=1.0,
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert torch.isfinite(gen.grad).all()
+    assert gen.grad.abs().max() < 1.0e-4
+
+
+def test_dp_noncollision_overlap_has_finite_gradient():
+    gen = torch.zeros(1, 5, 2, requires_grad=True)
+    neighbor = torch.zeros(1, 5, 2)
+    neighbor[..., 0] = 0.5
+    neighbor[..., 1] = 0.25
+
+    loss = diffusion_planner_collision_energy(
+        gen,
+        neighbor,
+        gen_size=(4.0, 2.0),
+        neighbor_size=(4.0, 2.0),
+        r=1.0,
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert torch.isfinite(gen.grad).all()
+    assert gen.grad.abs().max() > 0.0
 
 
 def test_sample_scores_order_collision_and_noncollision_oppositely():
@@ -138,10 +189,21 @@ def test_sample_scores_order_collision_and_noncollision_oppositely():
         ctrl_speed,
         causecollision_adv_term_weight={"distance": 1.0, "speed_penalty": 0.0, "filtered_distance": 0.1},
     )
-    noncollision_score = local_noncollision_sample_score(distance, safe_distance=4.0)
+    close = torch.zeros(1, 2, 2)
+    far = torch.zeros(1, 2, 2)
+    far[..., 0] = 20.0
+    gen_pos = torch.cat([close, far], dim=0)
+    ref_pos = torch.zeros_like(gen_pos)
+    noncollision_score = diffusion_planner_collision_energy(
+        gen_pos,
+        ref_pos,
+        gen_size=(4.0, 2.0),
+        neighbor_size=(4.0, 2.0),
+        reduction="none",
+    )
 
     assert torch.argsort(collision_score[:, 0]).tolist() == [0, 1]
-    assert torch.argsort(noncollision_score[:, 0]).tolist() == [1, 0]
+    assert torch.argsort(noncollision_score).tolist() == [1, 0]
 
 
 def test_interaction_guidance_scale_multiplies_collision_and_noncollision_objectives():
@@ -154,7 +216,8 @@ def test_interaction_guidance_scale_multiplies_collision_and_noncollision_object
         "dt": 1.0,
         "eps": 1.0e-6,
         "causecollision_adv_term_weight": {"distance": 1.0, "speed_penalty": 0.0, "filtered_distance": 0.1},
-        "local_noncollision_safe_distance": 4.0,
+        "dp_noncol_gen_size": (4.0, 2.0),
+        "dp_noncol_neighbor_size": (4.0, 2.0),
     }
 
     for collision_enabled, not_collision_enabled in ((True, False), (False, True)):

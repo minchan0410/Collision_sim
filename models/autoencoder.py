@@ -3,6 +3,7 @@ import torch
 from torch.nn import Module
 
 import models.diffusion as diffusion
+from models import diffusion_planner_collision_avoidance as dp_noncol
 from models import safesim_guidance
 from models.diffusion import DiffusionTraj, VarianceSchedule
 
@@ -34,6 +35,16 @@ class AutoEncoder(Module):
             else:
                 cur = getattr(cur, key, default)
         return cur
+
+    @staticmethod
+    def _cfg_pair(value, default):
+        if value is None:
+            value = default
+        if torch.is_tensor(value):
+            value = value.detach().flatten().tolist()
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            return (float(value[0]), float(value[1]))
+        return (float(default[0]), float(default[1]))
 
     def _build_dynamics_guidance(self, dynamics, velocity_std):
         dynamics_enabled = bool(getattr(self.config, "dynamics_guidance_enabled", False))
@@ -97,6 +108,18 @@ class AutoEncoder(Module):
         interaction_guidance_scale = getattr(self.config, "interaction_guidance_scale", None)
         if interaction_guidance_scale is None:
             interaction_guidance_scale = 1.0
+        car_size = (
+            float(getattr(self.config, "car_length", 4.65)),
+            float(getattr(self.config, "car_width", 1.825)),
+        )
+        dp_noncol_gen_size = self._cfg_pair(
+            self._cfg_get(self.config, ["dp_noncol", "gen_size"], None),
+            car_size,
+        )
+        dp_noncol_neighbor_size = self._cfg_pair(
+            self._cfg_get(self.config, ["dp_noncol", "neighbor_size"], None),
+            car_size,
+        )
 
         return {
             "enabled": True,
@@ -164,18 +187,12 @@ class AutoEncoder(Module):
             "causecollision_interact_dist_thresh": float(self._cfg_get(
                 self.config, ["safesim_guidance", "causecollision", "interact_dist_thresh"], 100.0
             )),
-            "local_noncollision_safe_distance": float(self._cfg_get(
-                self.config, ["local_noncollision", "safe_distance"], 4.0
-            )),
-            "local_noncollision_loss_timesteps": self._cfg_get(
-                self.config, ["local_noncollision", "loss_timesteps"], None
-            ),
-            "local_noncollision_filter_timesteps": self._cfg_get(
-                self.config, ["local_noncollision", "filter_timesteps"], None
-            ),
-            "local_noncollision_loss_scale": float(self._cfg_get(
-                self.config, ["local_noncollision", "loss_scale"], 1.0
-            )),
+            "dp_noncol_r": float(self._cfg_get(self.config, ["dp_noncol", "r"], 1.0)),
+            "dp_noncol_omega_c": float(self._cfg_get(self.config, ["dp_noncol", "omega_c"], 1.0)),
+            "dp_noncol_loss_scale": float(self._cfg_get(self.config, ["dp_noncol", "loss_scale"], 1.0)),
+            "dp_noncol_bbox_inflation": float(self._cfg_get(self.config, ["dp_noncol", "bbox_inflation"], 0.0)),
+            "dp_noncol_gen_size": dp_noncol_gen_size,
+            "dp_noncol_neighbor_size": dp_noncol_neighbor_size,
             "xT_temperature": float(getattr(self.config, "sampling_xt_temperature", 1.0)),
         }
 
@@ -355,15 +372,19 @@ class AutoEncoder(Module):
             ref_pos = ref_pos.to(device=device, dtype=dtype)
         if ref_pos.dim() == 2 and ref_pos.size(-1) == 2:
             ref_pos = ref_pos.unsqueeze(0)
-        if ref_pos.dim() != 3 or ref_pos.size(-1) != 2:
+        if ref_pos.dim() not in (3, 4) or ref_pos.size(-1) != 2:
             return None
         if ref_pos.size(0) == 1 and batch > 1:
-            ref_pos = ref_pos.expand(batch, -1, -1)
+            if ref_pos.dim() == 3:
+                ref_pos = ref_pos.expand(batch, -1, -1)
+            else:
+                ref_pos = ref_pos.expand(batch, -1, -1, -1)
         elif ref_pos.size(0) != batch:
             ref_pos = ref_pos[:batch]
-        if ref_pos.size(1) <= 0:
+        horizon_dim = 1 if ref_pos.dim() == 3 else 2
+        if ref_pos.size(horizon_dim) <= 0:
             return None
-        return ref_pos[:, :horizon]
+        return ref_pos[:, :horizon] if ref_pos.dim() == 3 else ref_pos[:, :, :horizon]
 
     @staticmethod
     def _gather_sample_order(value, order):
@@ -396,28 +417,31 @@ class AutoEncoder(Module):
         if ref_pos is None:
             return predicted_y_pos, predicted_y_vel, speed, yaw
 
-        min_len = min(horizon, ref_pos.size(1))
+        ref_horizon_dim = 1 if ref_pos.dim() == 3 else 2
+        min_len = min(horizon, ref_pos.size(ref_horizon_dim))
         pred_pos = predicted_y_pos[:, :, :min_len]
-        pred_vel = predicted_y_vel[:, :, :min_len]
-        ref_pos = ref_pos[:, :min_len]
+        ref_pos = ref_pos[:, :min_len] if ref_pos.dim() == 3 else ref_pos[:, :, :min_len]
         dt = max(float(guidance.get("dt", 1.0)), float(guidance.get("eps", 1e-6)))
         eps = float(guidance.get("eps", 1e-6))
-
-        ref_vel = predicted_y_vel.new_zeros(ref_pos.shape)
-        if ref_pos.size(1) > 1:
-            ref_vel[:, :-1] = (ref_pos[:, 1:] - ref_pos[:, :-1]) / dt
-            ref_vel[:, -1] = ref_vel[:, -2]
-
-        ref_pos_exp = ref_pos.unsqueeze(0).expand(samples, -1, -1, -1)
-        ref_vel_exp = ref_vel.unsqueeze(0).expand(samples, -1, -1, -1)
-        pair = safesim_guidance.compute_pair_kinematics(
-            pred_pos=pred_pos,
-            ref_pos=ref_pos_exp,
-            pred_vel=pred_vel,
-            ref_vel=ref_vel_exp,
-            eps=eps,
-        )
         if collision_enabled:
+            if ref_pos.dim() != 3:
+                return predicted_y_pos, predicted_y_vel, speed, yaw
+
+            pred_vel = predicted_y_vel[:, :, :min_len]
+            ref_vel = predicted_y_vel.new_zeros(ref_pos.shape)
+            if ref_pos.size(1) > 1:
+                ref_vel[:, :-1] = (ref_pos[:, 1:] - ref_pos[:, :-1]) / dt
+                ref_vel[:, -1] = ref_vel[:, -2]
+
+            ref_pos_exp = ref_pos.unsqueeze(0).expand(samples, -1, -1, -1)
+            ref_vel_exp = ref_vel.unsqueeze(0).expand(samples, -1, -1, -1)
+            pair = safesim_guidance.compute_pair_kinematics(
+                pred_pos=pred_pos,
+                ref_pos=ref_pos_exp,
+                pred_vel=pred_vel,
+                ref_vel=ref_vel_exp,
+                eps=eps,
+            )
             danger, _, _ = safesim_guidance.compute_safesim_ttc_score(
                 pair["rel_pos"],
                 pair["rel_vel"],
@@ -443,12 +467,27 @@ class AutoEncoder(Module):
                 causecollision_interact_dist_thresh=float(guidance.get("causecollision_interact_dist_thresh", 100.0)),
             )
         else:
-            score = safesim_guidance.local_noncollision_sample_score(
-                pair["distance"],
-                safe_distance=float(guidance.get("local_noncollision_safe_distance", 4.0)),
-                filter_timesteps=guidance.get("local_noncollision_filter_timesteps", None),
-                loss_scale=float(guidance.get("local_noncollision_loss_scale", 1.0)),
-            )
+            flat_pred_pos = pred_pos.reshape(samples * batch, min_len, 2)
+            if ref_pos.dim() == 3:
+                flat_ref_pos = ref_pos.unsqueeze(0).expand(samples, -1, -1, -1)
+                flat_ref_pos = flat_ref_pos.reshape(samples * batch, min_len, 2)
+            else:
+                flat_ref_pos = ref_pos.unsqueeze(0).expand(samples, -1, -1, -1, -1)
+                flat_ref_pos = flat_ref_pos.reshape(samples * batch, ref_pos.size(1), min_len, 2)
+
+            score = dp_noncol.diffusion_planner_collision_energy(
+                gen_pos=flat_pred_pos,
+                neighbor_pos=flat_ref_pos,
+                gen_size=guidance.get("dp_noncol_gen_size", None),
+                neighbor_size=guidance.get("dp_noncol_neighbor_size", None),
+                r=float(guidance.get("dp_noncol_r", 1.0)),
+                omega_c=float(guidance.get("dp_noncol_omega_c", 1.0)),
+                eps=eps,
+                loss_scale=float(guidance.get("dp_noncol_loss_scale", 1.0)),
+                valid_mask=guidance.get("dp_noncol_valid_mask", None),
+                bbox_inflation=float(guidance.get("dp_noncol_bbox_inflation", 0.0)),
+                reduction="none",
+            ).reshape(samples, batch)
 
         score = torch.nan_to_num(score, nan=float("inf"), posinf=float("inf"), neginf=-float("inf"))
         order = torch.argsort(score, dim=0)

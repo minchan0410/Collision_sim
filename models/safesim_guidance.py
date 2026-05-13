@@ -161,13 +161,6 @@ def causecollision_loss(
     return _reduce_loss(loss, reduction=reduction) * float(loss_scale)
 
 
-def local_noncollision_loss(distance, safe_distance=4.0, loss_timesteps=None, loss_scale=1.0, reduction="mean"):
-    """Local extension, not official SafeSim: repel only inside safe_distance."""
-    distance = _select_timesteps(distance, loss_timesteps)
-    penalty = torch.relu(float(safe_distance) - distance).pow(2)
-    return _reduce_loss(penalty, reduction=reduction) * float(loss_scale)
-
-
 def collision_guidance_loss(
     danger,
     distance,
@@ -237,14 +230,3 @@ def collision_sample_score(
         reduction="none",
     )
     return _per_sample_mean(cause) + _per_sample_mean(ttc)
-
-
-def local_noncollision_sample_score(distance, safe_distance=4.0, filter_timesteps=None, loss_scale=1.0):
-    score = local_noncollision_loss(
-        distance,
-        safe_distance=safe_distance,
-        loss_timesteps=filter_timesteps,
-        loss_scale=loss_scale,
-        reduction="none",
-    )
-    return _per_sample_mean(score)

@@ -5,6 +5,7 @@ import numpy as np
 import torch.nn as nn
 from .common import *
 from . import safesim_guidance
+from .diffusion_planner_collision_avoidance import diffusion_planner_collision_energy
 import pdb
 
 
@@ -220,11 +221,14 @@ class DiffusionTraj(Module):
 
         if ref_pos.dim() == 2 and ref_pos.size(-1) == 2:
             ref_pos = ref_pos.unsqueeze(0)
-        if ref_pos.dim() != 3 or ref_pos.size(-1) != 2 or horizon <= 0:
+        if ref_pos.dim() not in (3, 4) or ref_pos.size(-1) != 2 or horizon <= 0:
             return vel_phys.new_tensor(0.0)
 
         if ref_pos.size(0) == 1 and batch_size > 1:
-            ref_pos = ref_pos.expand(batch_size, -1, -1)
+            if ref_pos.dim() == 3:
+                ref_pos = ref_pos.expand(batch_size, -1, -1)
+            else:
+                ref_pos = ref_pos.expand(batch_size, -1, -1, -1)
         elif ref_pos.size(0) != batch_size:
             ref_pos = ref_pos[:batch_size]
         if ref_pos.size(0) == 0:
@@ -236,38 +240,43 @@ class DiffusionTraj(Module):
             initial_position = vel_phys.new_zeros((batch_size, 2))
 
         pred_pos = initial_position.unsqueeze(1) + torch.cumsum(vel_phys * dt, dim=1)
-        min_len = min(pred_pos.size(1), ref_pos.size(1))
+        ref_horizon_dim = 1 if ref_pos.dim() == 3 else 2
+        min_len = min(pred_pos.size(1), ref_pos.size(ref_horizon_dim))
         if min_len <= 0:
             return vel_phys.new_tensor(0.0)
         pred_pos = pred_pos[:, :min_len]
-        ref_pos = ref_pos[:, :min_len]
+        ref_pos = ref_pos[:, :min_len] if ref_pos.dim() == 3 else ref_pos[:, :, :min_len]
 
         objective = vel_phys.new_tensor(0.0)
-        ref_vel = vel_phys.new_zeros(ref_pos.shape)
-        if ref_pos.size(1) > 1:
-            ref_vel[:, :-1] = (ref_pos[:, 1:] - ref_pos[:, :-1]) / dt
-            ref_vel[:, -1] = ref_vel[:, -2]
-
-        pair = safesim_guidance.compute_pair_kinematics(
-            pred_pos=pred_pos,
-            ref_pos=ref_pos,
-            pred_vel=vel_phys[:, :min_len],
-            ref_vel=ref_vel,
-            eps=eps,
-        )
-        if pair["rel_pos"].numel() == 0:
-            return vel_phys.new_tensor(0.0)
-
-        danger, _, _ = safesim_guidance.compute_safesim_ttc_score(
-            pair["rel_pos"],
-            pair["rel_vel"],
-            time_bandwidth=float(guidance.get("ttc_time_bandwidth", guidance.get("safesim_ttc_time_bandwidth", 1.0))),
-            distance_bandwidth=float(guidance.get("ttc_distance_bandwidth", guidance.get("safesim_ttc_distance_bandwidth", 1.0))),
-            min_velocity_diff=float(guidance.get("ttc_min_velocity_diff", guidance.get("safesim_ttc_min_velocity_diff", 0.1))),
-            eps=eps,
-        )
 
         if collision_enabled:
+            if ref_pos.dim() != 3:
+                return objective * interaction_guidance_scale
+
+            ref_vel = vel_phys.new_zeros(ref_pos.shape)
+            if ref_pos.size(1) > 1:
+                ref_vel[:, :-1] = (ref_pos[:, 1:] - ref_pos[:, :-1]) / dt
+                ref_vel[:, -1] = ref_vel[:, -2]
+
+            pair = safesim_guidance.compute_pair_kinematics(
+                pred_pos=pred_pos,
+                ref_pos=ref_pos,
+                pred_vel=vel_phys[:, :min_len],
+                ref_vel=ref_vel,
+                eps=eps,
+            )
+            if pair["rel_pos"].numel() == 0:
+                return vel_phys.new_tensor(0.0)
+
+            danger, _, _ = safesim_guidance.compute_safesim_ttc_score(
+                pair["rel_pos"],
+                pair["rel_vel"],
+                time_bandwidth=float(guidance.get("ttc_time_bandwidth", guidance.get("safesim_ttc_time_bandwidth", 1.0))),
+                distance_bandwidth=float(guidance.get("ttc_distance_bandwidth", guidance.get("safesim_ttc_distance_bandwidth", 1.0))),
+                min_velocity_diff=float(guidance.get("ttc_min_velocity_diff", guidance.get("safesim_ttc_min_velocity_diff", 0.1))),
+                eps=eps,
+            )
+
             pred_speed = torch.norm(vel_phys[:, :min_len], dim=-1)
             ref_speed = torch.norm(ref_vel, dim=-1)
             objective = objective + safesim_guidance.collision_guidance_loss(
@@ -287,11 +296,17 @@ class DiffusionTraj(Module):
             )
 
         if not_collision_enabled:
-            objective = objective + safesim_guidance.local_noncollision_loss(
-                pair["distance"],
-                safe_distance=float(guidance.get("local_noncollision_safe_distance", 4.0)),
-                loss_timesteps=guidance.get("local_noncollision_loss_timesteps", None),
-                loss_scale=float(guidance.get("local_noncollision_loss_scale", 1.0)),
+            objective = objective + diffusion_planner_collision_energy(
+                gen_pos=pred_pos,
+                neighbor_pos=ref_pos,
+                gen_size=guidance.get("dp_noncol_gen_size", None),
+                neighbor_size=guidance.get("dp_noncol_neighbor_size", None),
+                r=float(guidance.get("dp_noncol_r", 1.0)),
+                omega_c=float(guidance.get("dp_noncol_omega_c", 1.0)),
+                eps=eps,
+                loss_scale=float(guidance.get("dp_noncol_loss_scale", 1.0)),
+                valid_mask=guidance.get("dp_noncol_valid_mask", None),
+                bbox_inflation=float(guidance.get("dp_noncol_bbox_inflation", 0.0)),
                 reduction="mean",
             )
 
