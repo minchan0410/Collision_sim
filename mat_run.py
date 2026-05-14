@@ -775,11 +775,11 @@ def main():
     # Disable tensorboard/event logs in visualization-only runs.
     _install_tensorboard_noop()
 
-    if not torch.cuda.is_available():
-        raise RuntimeError(
-            "CUDA is not available in the current Python environment. "
-            "Please run mat_run.py in the same GPU environment used for training (e.g., csim)."
-        )
+    requested_device = str(config.get("generation_device", "auto") or "auto").strip().lower()
+    if requested_device.startswith("cuda") and not torch.cuda.is_available():
+        print("[Warn] CUDA is not available; running visualization on CPU.")
+        config["generation_device"] = "cpu"
+        config["device"] = "cpu"
 
     from mid import MID
 

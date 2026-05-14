@@ -52,8 +52,23 @@ from matplotlib.patches import Polygon
 class MID():
     def __init__(self, config):
         self.config = config
-        torch.backends.cudnn.benchmark = True
+        self.device = self._resolve_device(config)
+        torch.backends.cudnn.benchmark = self.device.type == "cuda"
         self._build()
+
+    @staticmethod
+    def _resolve_device(config):
+        requested = str(getattr(config, "generation_device", "auto") or "auto").strip().lower()
+        if requested in ("", "none"):
+            requested = "auto"
+
+        if requested == "auto":
+            requested = "cuda" if torch.cuda.is_available() else "cpu"
+        elif requested.startswith("cuda") and not torch.cuda.is_available():
+            print("[Warn] CUDA requested but unavailable; falling back to CPU.")
+            requested = "cpu"
+
+        return torch.device(requested)
 
     def _cache_and_validate_hyperparams(self):
         self.ph = int(self.hyperparams['prediction_horizon'])
@@ -1703,7 +1718,7 @@ class MID():
 
         self._cache_and_validate_hyperparams()
 
-        self.registrar = ModelRegistrar(self.model_dir, "cuda")
+        self.registrar = ModelRegistrar(self.model_dir, self.device)
 
         if self.config.eval_mode:
             epoch = self.config.eval_at
@@ -1731,7 +1746,7 @@ class MID():
                 self.eval_env = None
 
     def _build_encoder(self):
-        self.encoder = Trajectron(self.registrar, self.hyperparams, "cuda")
+        self.encoder = Trajectron(self.registrar, self.hyperparams, self.device)
         self.encoder.set_environment(self.train_env)
         self.encoder.set_annealing_params()
 
@@ -1739,7 +1754,7 @@ class MID():
         config = self.config
         model = AutoEncoder(config, encoder=self.encoder)
 
-        self.model = model.cuda()
+        self.model = model.to(self.device)
         if self.config.eval_mode:
             self.model.load_state_dict(self.checkpoint['ddpm'])
 
