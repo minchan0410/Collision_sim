@@ -150,7 +150,6 @@ def diffusion_planner_collision_energy(
     r=1.0,
     omega_c=1.0,
     eps=1.0e-6,
-    loss_scale=1.0,
     valid_mask=None,
     bbox_inflation=0.0,
     reduction="mean",
@@ -223,7 +222,6 @@ def diffusion_planner_collision_energy(
     pos_energy = (pos_mask * psi).sum(dim=(1, 2)) / (pos_mask.sum(dim=(1, 2)) + float(eps))
     neg_energy = (neg_mask * psi).sum(dim=(1, 2)) / (neg_mask.sum(dim=(1, 2)) + float(eps))
     per_batch = (pos_energy + neg_energy) / omega_c
-    per_batch = per_batch * float(loss_scale)
 
     if reduction == "none":
         return per_batch

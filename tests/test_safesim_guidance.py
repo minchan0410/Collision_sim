@@ -7,11 +7,11 @@ from models.diffusion_planner_collision_avoidance import (
     diffusion_planner_collision_energy,
 )
 from models.safesim_guidance import (
-    calculate_exact_speed_penalty,
     causecollision_loss,
     collision_sample_score,
     compute_pair_kinematics,
     compute_safesim_ttc_score,
+    relative_speed_loss,
     safesim_ttc_loss,
 )
 
@@ -97,28 +97,39 @@ def test_ttc_collision_loss_prefers_dangerous_close_pair():
 def test_causecollision_prefers_closer_ego_target_trajectories():
     close_distance = torch.tensor([[1.0, 1.5, 1.2]])
     far_distance = torch.tensor([[6.0, 7.0, 8.0]])
-    ego_speed = torch.zeros_like(close_distance)
-    ctrl_speed = torch.zeros_like(close_distance)
-    weights = {"distance": 1.0, "speed_penalty": 0.0, "filtered_distance": 0.1}
 
-    close_obj = causecollision_loss(close_distance, ego_speed, ctrl_speed, adv_term_weight=weights)
-    far_obj = causecollision_loss(far_distance, ego_speed, ctrl_speed, adv_term_weight=weights)
+    close_obj = causecollision_loss(close_distance)
+    far_obj = causecollision_loss(far_distance)
 
     assert close_obj < far_obj
 
 
-def test_speed_penalty_targets_ego_speed_plus_speed_diff_when_close():
+def test_relative_speed_loss_matches_safesim_jv_when_close():
     distance = torch.tensor([[2.0, 2.0, 6.0]])
     ego_speed = torch.tensor([[10.0, 10.0, 10.0]])
-    matching_ctrl_speed = torch.tensor([[12.0, 12.0, 12.0]])
-    slow_ctrl_speed = torch.tensor([[10.0, 10.0, 10.0]])
+    matching_adv_speed = torch.tensor([[8.0, 8.0, 8.0]])
+    same_adv_speed = torch.tensor([[10.0, 10.0, 10.0]])
 
-    matching = calculate_exact_speed_penalty(distance, ego_speed, matching_ctrl_speed, exact_diff=2.0)
-    slow = calculate_exact_speed_penalty(distance, ego_speed, slow_ctrl_speed, exact_diff=2.0)
+    matching = relative_speed_loss(
+        distance,
+        ego_speed,
+        matching_adv_speed,
+        speed_diff=2.0,
+        distance_threshold=5.0,
+        reduction="none",
+    )
+    same = relative_speed_loss(
+        distance,
+        ego_speed,
+        same_adv_speed,
+        speed_diff=2.0,
+        distance_threshold=5.0,
+        reduction="none",
+    )
 
     assert torch.allclose(matching, torch.zeros_like(matching))
-    assert torch.allclose(slow[:, :2], torch.full((1, 2), 2.0))
-    assert torch.allclose(slow[:, 2:], torch.zeros(1, 1))
+    assert torch.allclose(same[:, :2], torch.full((1, 2), 2.0))
+    assert torch.allclose(same[:, 2:], torch.zeros(1, 1))
 
 
 def _rect(x, y, length=4.0, width=2.0):
@@ -187,7 +198,6 @@ def test_sample_scores_order_collision_and_noncollision_oppositely():
         distance,
         ego_speed,
         ctrl_speed,
-        causecollision_adv_term_weight={"distance": 1.0, "speed_penalty": 0.0, "filtered_distance": 0.1},
     )
     close = torch.zeros(1, 2, 2)
     far = torch.zeros(1, 2, 2)
@@ -215,7 +225,6 @@ def test_interaction_guidance_scale_multiplies_collision_and_noncollision_object
         "collision_reference_positions": ref_pos,
         "dt": 1.0,
         "eps": 1.0e-6,
-        "causecollision_adv_term_weight": {"distance": 1.0, "speed_penalty": 0.0, "filtered_distance": 0.1},
         "dp_noncol_gen_size": (4.0, 2.0),
         "dp_noncol_neighbor_size": (4.0, 2.0),
     }

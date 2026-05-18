@@ -100,11 +100,6 @@ class AutoEncoder(Module):
             ["safesim_guidance", "ttc", "min_velocity_diff"],
             getattr(self.config, "safesim_ttc_min_velocity_diff", 0.1),
         )
-        cause_adv_term_weight = self._cfg_get(
-            self.config,
-            ["safesim_guidance", "causecollision", "adv_term_weight"],
-            {"distance": 1.0, "speed_penalty": 0.0, "filtered_distance": 0.1},
-        )
         interaction_guidance_scale = getattr(self.config, "interaction_guidance_scale", None)
         if interaction_guidance_scale is None:
             interaction_guidance_scale = 1.0
@@ -160,7 +155,6 @@ class AutoEncoder(Module):
             "ttc_min_velocity_diff": float(ttc_min_velocity_diff),
             "ttc_loss_timesteps": self._cfg_get(self.config, ["safesim_guidance", "ttc", "loss_timesteps"], None),
             "ttc_filter_timesteps": self._cfg_get(self.config, ["safesim_guidance", "ttc", "filter_timesteps"], None),
-            "ttc_loss_scale": float(self._cfg_get(self.config, ["safesim_guidance", "ttc", "loss_scale"], 1.0)),
             "ttc_mode": self._cfg_get(self.config, ["safesim_guidance", "ttc", "mode"], "ego_target"),
             "causecollision_prediction_mode": self._cfg_get(
                 self.config, ["safesim_guidance", "causecollision", "prediction_mode"], "ego_plan"
@@ -171,25 +165,22 @@ class AutoEncoder(Module):
             "causecollision_filter_timesteps": self._cfg_get(
                 self.config, ["safesim_guidance", "causecollision", "filter_timesteps"], 20
             ),
-            "causecollision_loss_scale": float(self._cfg_get(
-                self.config, ["safesim_guidance", "causecollision", "loss_scale"], 1.0
-            )),
-            "causecollision_adv_term_weight": cause_adv_term_weight,
-            "causecollision_interact_mode": self._cfg_get(
-                self.config, ["safesim_guidance", "causecollision", "interact_mode"], "distance"
+            "relative_speed_loss_timesteps": self._cfg_get(
+                self.config, ["safesim_guidance", "relative_speed", "loss_timesteps"], None
             ),
-            "causecollision_adv_bound": float(self._cfg_get(
-                self.config, ["safesim_guidance", "causecollision", "adv_bound"], 30.0
+            "relative_speed_filter_timesteps": self._cfg_get(
+                self.config, ["safesim_guidance", "relative_speed", "filter_timesteps"], None
+            ),
+            "relative_speed_diff": float(self._cfg_get(
+                self.config,
+                ["safesim_guidance", "relative_speed", "v_diff"],
+                0.0,
             )),
-            "causecollision_speed_diff": float(self._cfg_get(
-                self.config, ["safesim_guidance", "causecollision", "speed_diff"], 2.0
-            )),
-            "causecollision_interact_dist_thresh": float(self._cfg_get(
-                self.config, ["safesim_guidance", "causecollision", "interact_dist_thresh"], 100.0
+            "relative_speed_distance_threshold": float(self._cfg_get(
+                self.config, ["safesim_guidance", "relative_speed", "d_col"], 5.0
             )),
             "dp_noncol_r": float(self._cfg_get(self.config, ["dp_noncol", "r"], 1.0)),
             "dp_noncol_omega_c": float(self._cfg_get(self.config, ["dp_noncol", "omega_c"], 1.0)),
-            "dp_noncol_loss_scale": float(self._cfg_get(self.config, ["dp_noncol", "loss_scale"], 1.0)),
             "dp_noncol_bbox_inflation": float(self._cfg_get(self.config, ["dp_noncol", "bbox_inflation"], 0.0)),
             "dp_noncol_gen_size": dp_noncol_gen_size,
             "dp_noncol_neighbor_size": dp_noncol_neighbor_size,
@@ -454,17 +445,16 @@ class AutoEncoder(Module):
                 danger=danger,
                 distance=pair["distance"],
                 ego_speed=torch.norm(ref_vel_exp, dim=-1),
-                ctrl_speed=torch.norm(pred_vel, dim=-1),
+                adv_speed=torch.norm(pred_vel, dim=-1),
                 ttc_filter_timesteps=guidance.get("ttc_filter_timesteps", guidance.get("ttc_loss_timesteps", None)),
-                ttc_loss_scale=float(guidance.get("ttc_loss_scale", 1.0)),
                 causecollision_filter_timesteps=guidance.get(
                     "causecollision_filter_timesteps", guidance.get("causecollision_loss_timesteps", None)
                 ),
-                causecollision_loss_scale=float(guidance.get("causecollision_loss_scale", 1.0)),
-                causecollision_adv_term_weight=guidance.get("causecollision_adv_term_weight", None),
-                causecollision_adv_bound=float(guidance.get("causecollision_adv_bound", 30.0)),
-                causecollision_speed_diff=float(guidance.get("causecollision_speed_diff", 2.0)),
-                causecollision_interact_dist_thresh=float(guidance.get("causecollision_interact_dist_thresh", 100.0)),
+                relative_speed_filter_timesteps=guidance.get(
+                    "relative_speed_filter_timesteps", guidance.get("relative_speed_loss_timesteps", None)
+                ),
+                relative_speed_diff=float(guidance.get("relative_speed_diff", 0.0)),
+                relative_speed_distance_threshold=float(guidance.get("relative_speed_distance_threshold", 5.0)),
             )
         else:
             flat_pred_pos = pred_pos.reshape(samples * batch, min_len, 2)
@@ -483,7 +473,6 @@ class AutoEncoder(Module):
                 r=float(guidance.get("dp_noncol_r", 1.0)),
                 omega_c=float(guidance.get("dp_noncol_omega_c", 1.0)),
                 eps=eps,
-                loss_scale=float(guidance.get("dp_noncol_loss_scale", 1.0)),
                 valid_mask=guidance.get("dp_noncol_valid_mask", None),
                 bbox_inflation=float(guidance.get("dp_noncol_bbox_inflation", 0.0)),
                 reduction="none",

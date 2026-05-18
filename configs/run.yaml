@@ -113,7 +113,8 @@ not_collision_guidance_enabled: False
 # 충돌/비충돌 공통 힘 배율. 1.0이면 기존 세기, 값을 키우면 interaction guidance가 강해집니다.
 interaction_guidance_scale: 7.0
 
-# collision=True일 때만 사용: SafeSim 공식 guidance_config.py의 params/ttc/causecollision 이름을 유지합니다.
+# collision=True일 때만 사용: SafeSim J_coll = J_cause + J_v + J_ttc 형태.
+# 개별 alpha 없이 interaction_guidance_scale 하나로 전체 collision guidance 세기를 조절합니다.
 safesim_guidance:
   params:
     inner_lr: 0.2
@@ -121,35 +122,30 @@ safesim_guidance:
     # 로컬 adapter: 여러 샘플 중 objective가 가장 좋은 샘플을 sample=1로 재정렬.
     sample_filter_enabled: True
   ttc:
-    # SafeSim 공식 이름: time_bandwidth, distance_bandwidth, min_velocity_diff.
+    # SafeSim 공식 이름: time_bandwidth(lambda_t), distance_bandwidth(lambda_d), min_velocity_diff.
     time_bandwidth: 1.0
     distance_bandwidth: 1.0
     min_velocity_diff: 0.1
     loss_timesteps: null
     filter_timesteps: null
-    loss_scale: 3.0
     mode: ego_target
   causecollision:
-    # SafeSim 공식 causecollision 파라미터 이름.
+    # J_cause = mean_t d(t): SafeSim J_coll의 gradient-descent loss 형태.
     prediction_mode: ego_plan
     loss_timesteps: null
     filter_timesteps: null
-    loss_scale: 30.0
-    adv_term_weight:
-      distance: 1.0
-      speed_penalty: 0.0
-      filtered_distance: 0.5
-    interact_mode: distance
-    adv_bound: 30.0
-    speed_diff: 2.0
-    interact_dist_thresh: 100.0
+  relative_speed:
+    # J_v = mean_t |v_t^1 - v_t^a - v_diff| 1{d(t) < d_col}.
+    v_diff: 2.0
+    d_col: 5.0
+    loss_timesteps: null
+    filter_timesteps: null
 
 # non-collision=True일 때만 사용: Diffusion Planner Appendix C.3 Eq. (9) collision-avoidance energy.
 # bbox size는 기본적으로 car_length/car_width를 사용합니다. 실험별 override가 필요할 때만 gen_size/neighbor_size를 켜세요.
 dp_noncol:
   r: 1.0
   omega_c: 1.0
-  loss_scale: 1.0
   bbox_inflation: 0.0
   gen_size: null
   neighbor_size: null

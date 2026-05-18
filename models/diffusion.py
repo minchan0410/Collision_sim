@@ -283,15 +283,14 @@ class DiffusionTraj(Module):
                 danger=danger,
                 distance=pair["distance"],
                 ego_speed=ref_speed,
-                ctrl_speed=pred_speed,
+                adv_speed=pred_speed,
                 ttc_loss_timesteps=guidance.get("ttc_loss_timesteps", None),
-                ttc_loss_scale=float(guidance.get("ttc_loss_scale", 1.0)),
                 causecollision_loss_timesteps=guidance.get("causecollision_loss_timesteps", None),
-                causecollision_loss_scale=float(guidance.get("causecollision_loss_scale", 1.0)),
-                causecollision_adv_term_weight=guidance.get("causecollision_adv_term_weight", None),
-                causecollision_adv_bound=float(guidance.get("causecollision_adv_bound", 30.0)),
-                causecollision_speed_diff=float(guidance.get("causecollision_speed_diff", 2.0)),
-                causecollision_interact_dist_thresh=float(guidance.get("causecollision_interact_dist_thresh", 100.0)),
+                relative_speed_loss_timesteps=guidance.get(
+                    "relative_speed_loss_timesteps", guidance.get("causecollision_loss_timesteps", None)
+                ),
+                relative_speed_diff=float(guidance.get("relative_speed_diff", 0.0)),
+                relative_speed_distance_threshold=float(guidance.get("relative_speed_distance_threshold", 5.0)),
                 reduction="mean",
             )
 
@@ -304,7 +303,6 @@ class DiffusionTraj(Module):
                 r=float(guidance.get("dp_noncol_r", 1.0)),
                 omega_c=float(guidance.get("dp_noncol_omega_c", 1.0)),
                 eps=eps,
-                loss_scale=float(guidance.get("dp_noncol_loss_scale", 1.0)),
                 valid_mask=guidance.get("dp_noncol_valid_mask", None),
                 bbox_inflation=float(guidance.get("dp_noncol_bbox_inflation", 0.0)),
                 reduction="mean",

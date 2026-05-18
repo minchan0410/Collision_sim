@@ -89,144 +89,110 @@ def _per_sample_mean(value):
     return value.mean(dim=-1)
 
 
-def safesim_ttc_loss(danger, loss_timesteps=None, loss_scale=1.0, reduction="mean"):
+def safesim_ttc_loss(danger, loss_timesteps=None, reduction="mean"):
     """SafeSim TTC loss sign: minimizing this increases the TTC danger score."""
     danger = _select_timesteps(danger, loss_timesteps)
     loss = -danger
-    return _reduce_loss(loss, reduction=reduction) * float(loss_scale)
+    return _reduce_loss(loss, reduction=reduction)
 
 
-def calculate_exact_speed_penalty(
+def causecollision_loss(distance, loss_timesteps=None, reduction="mean"):
+    """
+    Gradient-descent form of SafeSim J_coll = -sum_t d(t).
+
+    The diffusion guidance step minimizes objectives, so the paper's collision
+    score is sign-flipped into mean_t d(t). This intentionally uses only the
+    timestep-wise distance term.
+    """
+    distance = _select_timesteps(distance, loss_timesteps)
+    if distance.numel() == 0:
+        return distance.new_tensor(0.0)
+    return _reduce_loss(distance, reduction=reduction)
+
+
+def relative_speed_loss(
     distance,
     ego_speed,
-    ctrl_speed,
-    exact_diff,
+    adv_speed,
+    speed_diff=0.0,
     distance_threshold=5.0,
-    margin=0.0,
-):
-    """SafeSim helper: penalize ctrl speed away from ego_speed + exact_diff when close."""
-    close_enough = distance < float(distance_threshold)
-    target_speed = ego_speed + float(exact_diff)
-    speed_difference = torch.abs(ctrl_speed - target_speed)
-    outside_margin = speed_difference > float(margin)
-    return (speed_difference - float(margin)) * close_enough.float() * outside_margin.float()
-
-
-def causecollision_loss(
-    distance,
-    ego_speed,
-    ctrl_speed,
-    adv_term_weight=None,
-    adv_bound=30.0,
-    speed_diff=2.0,
-    interact_dist_thresh=100.0,
     loss_timesteps=None,
-    loss_scale=1.0,
     reduction="mean",
 ):
-    """
-    Local ego-target version of SafeSim causecollision.
-
-    Official SafeSim computes this over ego/control indices inside a multi-agent
-    batch. Here distance is already the selected ego-target distance [B,T].
-    """
-    if adv_term_weight is None:
-        adv_term_weight = {}
-    distance_weight = float(adv_term_weight.get("distance", 1.0))
-    filtered_weight = float(adv_term_weight.get("filtered_distance", 0.1))
-    speed_weight = float(adv_term_weight.get("speed_penalty", 0.0))
-
+    """SafeSim supplementary J_v = |v_ego - v_adv - v_diff| 1{d < d_col}."""
     distance = _select_timesteps(distance, loss_timesteps)
     ego_speed = _select_timesteps(ego_speed, loss_timesteps)
-    ctrl_speed = _select_timesteps(ctrl_speed, loss_timesteps)
+    adv_speed = _select_timesteps(adv_speed, loss_timesteps)
     if distance.numel() == 0:
         return distance.new_tensor(0.0)
 
-    min_distances = torch.min(distance, dim=-1, keepdim=True).values
-    interaction_mask = min_distances < float(interact_dist_thresh)
-    interaction_mask = interaction_mask.expand_as(distance)
-
-    speed_penalty = calculate_exact_speed_penalty(distance, ego_speed, ctrl_speed, speed_diff)
-    distance_term = distance_weight * min_distances.expand_as(distance)
-    speed_term = speed_weight * speed_penalty
-    filtered_term = filtered_weight * distance
-
-    loss = torch.zeros_like(distance)
-    loss[interaction_mask] = (
-        distance_term[interaction_mask]
-        + speed_term[interaction_mask]
-        + filtered_term[interaction_mask]
-    )
-    loss = torch.clamp(loss, 0.0, float(adv_bound))
-    return _reduce_loss(loss, reduction=reduction) * float(loss_scale)
+    mask = distance < float(distance_threshold)
+    loss = torch.abs(ego_speed - adv_speed - float(speed_diff)) * mask.float()
+    return _reduce_loss(loss, reduction=reduction)
 
 
 def collision_guidance_loss(
     danger,
     distance,
     ego_speed,
-    ctrl_speed,
+    adv_speed,
     ttc_loss_timesteps=None,
-    ttc_loss_scale=1.0,
     causecollision_loss_timesteps=None,
-    causecollision_loss_scale=1.0,
-    causecollision_adv_term_weight=None,
-    causecollision_adv_bound=30.0,
-    causecollision_speed_diff=2.0,
-    causecollision_interact_dist_thresh=100.0,
+    relative_speed_loss_timesteps=None,
+    relative_speed_diff=0.0,
+    relative_speed_distance_threshold=5.0,
     reduction="mean",
 ):
     ttc = safesim_ttc_loss(
         danger,
         loss_timesteps=ttc_loss_timesteps,
-        loss_scale=ttc_loss_scale,
         reduction=reduction,
     )
     cause = causecollision_loss(
         distance,
-        ego_speed,
-        ctrl_speed,
-        adv_term_weight=causecollision_adv_term_weight,
-        adv_bound=causecollision_adv_bound,
-        speed_diff=causecollision_speed_diff,
-        interact_dist_thresh=causecollision_interact_dist_thresh,
         loss_timesteps=causecollision_loss_timesteps,
-        loss_scale=causecollision_loss_scale,
         reduction=reduction,
     )
-    return cause + ttc
+    rel_speed = relative_speed_loss(
+        distance,
+        ego_speed,
+        adv_speed,
+        speed_diff=relative_speed_diff,
+        distance_threshold=relative_speed_distance_threshold,
+        loss_timesteps=relative_speed_loss_timesteps,
+        reduction=reduction,
+    )
+    return cause + rel_speed + ttc
 
 
 def collision_sample_score(
     danger,
     distance,
     ego_speed,
-    ctrl_speed,
+    adv_speed,
     ttc_filter_timesteps=None,
-    ttc_loss_scale=1.0,
     causecollision_filter_timesteps=None,
-    causecollision_loss_scale=1.0,
-    causecollision_adv_term_weight=None,
-    causecollision_adv_bound=30.0,
-    causecollision_speed_diff=2.0,
-    causecollision_interact_dist_thresh=100.0,
+    relative_speed_filter_timesteps=None,
+    relative_speed_diff=0.0,
+    relative_speed_distance_threshold=5.0,
 ):
     ttc = safesim_ttc_loss(
         danger,
         loss_timesteps=ttc_filter_timesteps,
-        loss_scale=ttc_loss_scale,
         reduction="none",
     )
     cause = causecollision_loss(
         distance,
-        ego_speed,
-        ctrl_speed,
-        adv_term_weight=causecollision_adv_term_weight,
-        adv_bound=causecollision_adv_bound,
-        speed_diff=causecollision_speed_diff,
-        interact_dist_thresh=causecollision_interact_dist_thresh,
         loss_timesteps=causecollision_filter_timesteps,
-        loss_scale=causecollision_loss_scale,
         reduction="none",
     )
-    return _per_sample_mean(cause) + _per_sample_mean(ttc)
+    rel_speed = relative_speed_loss(
+        distance,
+        ego_speed,
+        adv_speed,
+        speed_diff=relative_speed_diff,
+        distance_threshold=relative_speed_distance_threshold,
+        loss_timesteps=relative_speed_filter_timesteps,
+        reduction="none",
+    )
+    return _per_sample_mean(cause) + _per_sample_mean(rel_speed) + _per_sample_mean(ttc)
